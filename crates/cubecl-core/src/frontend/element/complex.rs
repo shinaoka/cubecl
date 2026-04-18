@@ -1,20 +1,21 @@
 use core::ops::{Add, Div, Mul, Neg, Sub};
 
 use crate::{
+    Runtime,
     ir::{ComplexKind, ElemType, ManagedVariable, Scope, StorageType, Type},
     prelude::{CubePrimitive, CubeType, IntoRuntime, NativeAssign, NativeExpand, Scalar},
     unexpanded,
 };
-use cubecl_ir::{Arithmetic, ConstantValue, Operator};
+use cubecl_ir::{Arithmetic, ConstantValue, Operator, features::ComplexUsage};
+use cubecl_runtime::client::ComputeClient;
 
 use crate::frontend::{
     Abs,
     operation::{unary_expand, unary_expand_fixed_output},
 };
 
-pub trait Complex:
+pub trait ComplexCore:
     CubePrimitive
-    + Abs<AbsElem = Self::FloatElem>
     + Add<Output = Self>
     + Sub<Output = Self>
     + Mul<Output = Self>
@@ -41,23 +42,46 @@ pub trait Complex:
     fn imag_val(self) -> Self::FloatElem {
         unexpanded!()
     }
+
+    fn supported_complex_uses<R: Runtime>(
+        client: &ComputeClient<R>,
+    ) -> enumset::EnumSet<ComplexUsage> {
+        client
+            .properties()
+            .complex_usage(Self::as_type_native_unchecked().storage_type())
+    }
 }
 
-pub trait ComplexExpand {
+pub trait ComplexCompare: ComplexCore {}
+
+pub trait ComplexMath:
+    ComplexCore
+    + Abs<AbsElem = Self::FloatElem>
+    + crate::frontend::Exp
+    + crate::frontend::Log
+    + crate::frontend::Sin
+    + crate::frontend::Cos
+    + crate::frontend::Sqrt
+    + crate::frontend::Tanh
+    + crate::frontend::Powf
+{
+}
+
+pub trait ComplexCoreExpand {
     fn __expand_conj_method(self, scope: &mut Scope) -> Self;
     fn __expand_real_val_method(
         self,
         scope: &mut Scope,
-    ) -> NativeExpand<<Self as ComplexExpand>::FloatElem>;
+    ) -> NativeExpand<<Self as ComplexCoreExpand>::FloatElem>;
     fn __expand_imag_val_method(
         self,
         scope: &mut Scope,
-    ) -> NativeExpand<<Self as ComplexExpand>::FloatElem>;
+    ) -> NativeExpand<<Self as ComplexCoreExpand>::FloatElem>;
 
     type FloatElem: Scalar;
 }
 
-impl<T: Complex> ComplexExpand for NativeExpand<T> {
+impl<T: ComplexCore> ComplexCoreExpand for NativeExpand<T> {
     type FloatElem = T::FloatElem;
 
     fn __expand_conj_method(self, scope: &mut Scope) -> Self {
@@ -120,9 +144,13 @@ macro_rules! impl_complex {
             type AbsElem = $float;
         }
 
-        impl Complex for $primitive {
+        impl ComplexCore for $primitive {
             type FloatElem = $float;
         }
+
+        impl ComplexCompare for $primitive {}
+
+        impl ComplexMath for $primitive {}
     };
 }
 

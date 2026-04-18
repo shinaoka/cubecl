@@ -835,6 +835,10 @@ impl<Marker: 'static> Zero for DynamicScalar<Marker> {
     }
 }
 
-impl<Marker: 'static> Complex for DynamicScalar<Marker> {
+impl<Marker: 'static> ComplexCore for DynamicScalar<Marker> {
     type FloatElem = Self;
 }
+
+impl<Marker: 'static> ComplexCompare for DynamicScalar<Marker> {}
+
+impl<Marker: 'static> ComplexMath for DynamicScalar<Marker> {}

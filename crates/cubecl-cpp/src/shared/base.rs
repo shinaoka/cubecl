@@ -2136,8 +2136,6 @@ pub fn register_supported_types(props: &mut DeviceProperties) {
         gpu::ElemType::Float(gpu::FloatKind::Flex32),
         // Causes CUDA_ERROR_INVALID_VALUE for matmul, disabling until that can be investigated
         //gpu::Elem::Float(gpu::FloatKind::F64),
-        gpu::ElemType::Complex(gpu::ComplexKind::C32),
-        gpu::ElemType::Complex(gpu::ComplexKind::C64),
         gpu::ElemType::Bool,
     ];
 
