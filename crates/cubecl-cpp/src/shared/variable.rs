@@ -213,7 +213,7 @@ pub(crate) fn format_const<D: Dialect>(number: &ConstantValue, item: &Item<D>) -
         return match item.elem() {
             Elem::CF32 => format!("make_cuFloatComplex({re:?}f, {im:?}f)"),
             Elem::CF64 => format!("make_cuDoubleComplex({re:?}, {im:?})"),
-            _ => format!("{number}"),
+            _ => unreachable!("Complex constant requires a complex element type"),
         };
     }
 
