@@ -453,12 +453,10 @@ impl<D: Dialect> Unary<D> for IsNan {
         _elem: Elem<D>,
     ) -> std::fmt::Result {
         let elem = input.elem();
-        match elem {
-            Elem::CF32 | Elem::CF64 => {
-                write!(f, "(isnan({input}.x) || isnan({input}.y))")
-            }
-            _ => write!(f, "{}({input})", elem_function_name("isnan", elem)),
+        if matches!(elem, Elem::CF32 | Elem::CF64) {
+            unreachable!("IsNan is not part of the complex contract (rejected by validation)");
         }
+        write!(f, "{}({input})", elem_function_name("isnan", elem))
     }
 
     fn can_optimize() -> bool {
@@ -475,12 +473,10 @@ impl<D: Dialect> Unary<D> for IsInf {
         _elem: Elem<D>,
     ) -> std::fmt::Result {
         let elem = input.elem();
-        match elem {
-            Elem::CF32 | Elem::CF64 => {
-                write!(f, "(isinf({input}.x) || isinf({input}.y))")
-            }
-            _ => write!(f, "{}({input})", elem_function_name("isinf", elem)),
+        if matches!(elem, Elem::CF32 | Elem::CF64) {
+            unreachable!("IsInf is not part of the complex contract (rejected by validation)");
         }
+        write!(f, "{}({input})", elem_function_name("isinf", elem))
     }
 
     fn can_optimize() -> bool {

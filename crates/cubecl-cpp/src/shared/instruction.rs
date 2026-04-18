@@ -669,10 +669,10 @@ for ({i_ty} {i} = {start}; {i} {cmp} {end}; {increment}) {{
                 let elem = out.elem();
                 let out_left = out.fmt_left();
                 // cuComplex structs have fields .x (real) and .y (imag).
-                let make_fn = match format!("{elem}").as_str() {
-                    "cuFloatComplex" => "make_cuFloatComplex",
-                    "cuDoubleComplex" => "make_cuDoubleComplex",
-                    _ => "make_cuDoubleComplex", // fallback
+                let make_fn = match elem {
+                    Elem::CF32 => "make_cuFloatComplex",
+                    Elem::CF64 => "make_cuDoubleComplex",
+                    _ => unreachable!("Conj lowering requires a complex element type"),
                 };
                 writeln!(f, "{out_left} = {make_fn}({input}.x, -{input}.y);")
             }

@@ -257,7 +257,9 @@ impl<'a> Visitor<'a> {
                         (integer_type, integer_attribute)
                     }
                     ConstantValue::Complex(_, _) => {
-                        unimplemented!("Complex constants are not supported on the CPU backend")
+                        unreachable!(
+                            "Complex constants are rejected by validation before reaching the CPU backend"
+                        )
                     }
                 };
                 let value = self.append_operation_with_result(arith::constant(

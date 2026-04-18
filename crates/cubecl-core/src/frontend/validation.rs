@@ -50,6 +50,11 @@ fn require_complex_usage(
         return;
     }
 
+    // `scope.properties` is populated for all production paths (kernel launch
+    // and compute-builder scopes). When it is unset — only possible from
+    // hand-rolled compiler tests that construct a bare `Scope` — we cannot
+    // decide capability and fall through silently. Such tests must set
+    // `device_properties` if they exercise complex types.
     let Some(properties) = scope.properties.clone() else {
         return;
     };

@@ -393,9 +393,10 @@ fn try_const_eval_arithmetic(op: &mut Arithmetic) -> Option<ConstantValue> {
 
         Arithmetic::Abs(op) => {
             use ConstantValue::*;
-            op.input.as_const().map(|input| match input {
-                Int(input) => ConstantValue::Int(input.abs()),
-                Float(input) => ConstantValue::Float(input.abs()),
+            op.input.as_const().and_then(|input| match input {
+                Int(input) => Some(ConstantValue::Int(input.abs())),
+                Float(input) => Some(ConstantValue::Float(input.abs())),
+                Complex(_, _) => None,
                 _ => unreachable!(),
             })
         }
