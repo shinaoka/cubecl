@@ -6,15 +6,20 @@ authors = [
     "crutcher <crutcher@gmail.com>",
 ]
 categories = ["science", "mathematics", "algorithms"]
-description = "CubeCL ZSpace Library."
+description = "Temporary tensor4all fork of CubeCL ZSpace library"
 keywords = []
-name = "cubecl-zspace"
+name = "t4a-cubecl-zspace"
 
 edition.workspace = true
 license.workspace = true
 readme.workspace = true
+repository = "https://github.com/tensor4all/cubecl/tree/main/crates/cubecl-zspace"
 rust-version.workspace = true
 version.workspace = true
+
+
+[lib]
+name = "cubecl_zspace"
 
 
 [lints]

@@ -4,16 +4,17 @@ authors = [
     "louisfd <louisfd94@gmail.com",
 ]
 categories = ["science"]
-description = "Internal procedural macros for CubeCL"
+description = "Temporary tensor4all fork of CubeCL internal procedural macros"
 edition.workspace = true
 keywords = []
 license.workspace = true
-name = "cubecl-macros-internal"
-readme.workspace = true
-repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-macros-internal"
+name = "t4a-cubecl-macros-internal"
+readme = "README.md"
+repository = "https://github.com/tensor4all/cubecl/tree/main/crates/cubecl-macros-internal"
 version.workspace = true
 
 [lib]
+name = "cubecl_macros_internal"
 proc-macro = true
 
 

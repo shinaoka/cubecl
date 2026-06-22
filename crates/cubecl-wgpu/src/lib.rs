@@ -1,3 +1,8 @@
+// The tensor4all fork publishes the WGPU/WGSL path needed by tenferro-rs.
+// Upstream SPIR-V cfgs remain in the source but are outside this minimal
+// publish closure.
+#![allow(unexpected_cfgs)]
+
 #[macro_use]
 extern crate derive_new;
 

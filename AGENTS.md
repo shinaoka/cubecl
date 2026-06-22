@@ -35,23 +35,22 @@ This repository is the `tensor4all/cubecl` fork of upstream
   tenferro may depend on:
 
   ```toml
-  cubecl = { package = "t4a-cubecl", version = "=0.10.0-t4a.1", features = ["cuda"] }
-  cubecl-cuda = { package = "t4a-cubecl-cuda", version = "=0.10.0-t4a.1" }
-  cubecl-runtime = { package = "t4a-cubecl-runtime", version = "=0.10.0-t4a.1" }
+  cubecl = { package = "t4a-cubecl", version = "=0.10.0", features = ["cuda"] }
+  cubecl-cuda = { package = "t4a-cubecl-cuda", version = "=0.10.0" }
+  cubecl-runtime = { package = "t4a-cubecl-runtime", version = "=0.10.0" }
   ```
 
 - Publish only the first-party crate dependency closure required by
   `tenferro-rs`. Do not publish unused CubeCL workspace crates unless tenferro
   starts requiring them.
-- For the current CUDA path, the expected publish set is:
+- For the current CUDA and WebGPU paths, the expected publish set is:
   `t4a-cubecl`, `t4a-cubecl-common`, `t4a-cubecl-core`,
   `t4a-cubecl-ir`, `t4a-cubecl-macros`,
   `t4a-cubecl-macros-internal`, `t4a-cubecl-runtime`,
   `t4a-cubecl-zspace`, `t4a-cubecl-std`, `t4a-cubecl-cuda`,
-  `t4a-cubecl-cpp`, and `t4a-cubecl-opt`.
-- Do not publish `cubecl-cpu`, `cubecl-hip`, `cubecl-wgpu`,
-  `cubecl-spirv`, examples, or `xtask` unless they become required by
-  tenferro.
+  `t4a-cubecl-wgpu`, `t4a-cubecl-cpp`, and `t4a-cubecl-opt`.
+- Do not publish `cubecl-cpu`, `cubecl-hip`, `cubecl-spirv`, examples, or
+  `xtask` unless they become required by tenferro.
 
 ## Public Messaging
 

@@ -4,14 +4,18 @@ authors = [
     "louisfd <louisfd94@gmail.com",
 ]
 categories = ["science"]
-description = "Intermediate representation for CubeCL"
+description = "Temporary tensor4all fork of CubeCL IR"
 edition.workspace = true
 keywords = []
 license.workspace = true
-name = "cubecl-ir"
-readme.workspace = true
-repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-ir"
+name = "t4a-cubecl-ir"
+readme = "README.md"
+repository = "https://github.com/tensor4all/cubecl/tree/main/crates/cubecl-ir"
 version.workspace = true
+
+
+[lib]
+name = "cubecl_ir"
 
 
 [lints]
@@ -27,11 +31,11 @@ std = []
 tracing = ["cubecl-common/tracing"]
 
 [dependencies]
-cubecl-common = { path = "../cubecl-common", version = "0.10.0", default-features = false, features = [
+cubecl-common = { package = "t4a-cubecl-common", path = "../cubecl-common", version = "0.10.0", default-features = false, features = [
     "fp4",
     "fp8",
 ] }
-cubecl-macros-internal = { path = "../cubecl-macros-internal", version = "0.10.0" }
+cubecl-macros-internal = { package = "t4a-cubecl-macros-internal", path = "../cubecl-macros-internal", version = "0.10.0" }
 
 derive-new = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }

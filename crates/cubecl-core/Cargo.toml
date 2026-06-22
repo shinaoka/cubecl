@@ -4,14 +4,18 @@ authors = [
     "louisfd <louisfd94@gmail.com>",
 ]
 categories = ["science", "mathematics", "algorithms"]
-description = "CubeCL core create"
+description = "Temporary tensor4all fork of CubeCL core"
 edition.workspace = true
 keywords = []
 license.workspace = true
-name = "cubecl-core"
+name = "t4a-cubecl-core"
 readme.workspace = true
-repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-core"
+repository = "https://github.com/tensor4all/cubecl/tree/main/crates/cubecl-core"
 version.workspace = true
+
+
+[lib]
+name = "cubecl_core"
 
 
 [lints]
@@ -32,16 +36,16 @@ log = { workspace = true }
 test-log = { workspace = true, optional = true }
 tracing = { workspace = true, features = ["attributes"], optional = true }
 
-cubecl-ir = { path = "../cubecl-ir", version = "0.10.0", default-features = false, features = [
+cubecl-ir = { package = "t4a-cubecl-ir", path = "../cubecl-ir", version = "0.10.0", default-features = false, features = [
     "serde",
 ] }
-cubecl-runtime = { path = "../cubecl-runtime", version = "0.10.0", default-features = false }
-cubecl-zspace = { path = "../cubecl-zspace", version = "0.10.0" }
+cubecl-runtime = { package = "t4a-cubecl-runtime", path = "../cubecl-runtime", version = "0.10.0", default-features = false }
+cubecl-zspace = { package = "t4a-cubecl-zspace", path = "../cubecl-zspace", version = "0.10.0" }
 
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
-cubecl-common = { path = "../cubecl-common", version = "0.10.0", default-features = false }
-cubecl-macros = { path = "../cubecl-macros", version = "0.10.0", default-features = false }
+cubecl-common = { package = "t4a-cubecl-common", path = "../cubecl-common", version = "0.10.0", default-features = false }
+cubecl-macros = { package = "t4a-cubecl-macros", path = "../cubecl-macros", version = "0.10.0", default-features = false }
 derive-new = { workspace = true }
 derive_more = { workspace = true, features = [
     "not",

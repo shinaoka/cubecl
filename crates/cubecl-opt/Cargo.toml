@@ -1,14 +1,18 @@
 [package]
 authors = ["Genna Wingert"]
 categories = ["algorithms"]
-description = "Compiler optimizations for CubeCL"
+description = "Temporary tensor4all fork of CubeCL compiler optimizations"
 edition.workspace = true
 keywords = ["gpu", "compiler"]
 license.workspace = true
-name = "cubecl-opt"
-readme.workspace = true
-repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-opt"
+name = "t4a-cubecl-opt"
+readme = "README.md"
+repository = "https://github.com/tensor4all/cubecl/tree/main/crates/cubecl-opt"
 version.workspace = true
+
+
+[lib]
+name = "cubecl_opt"
 
 
 [lints]
@@ -23,9 +27,9 @@ tracing = ["cubecl-common/tracing", "cubecl-ir/tracing", "cubecl-core/tracing"]
 
 
 [dependencies]
-cubecl-common = { path = "../cubecl-common", version = "0.10.0", default-features = false }
-cubecl-core = { path = "../cubecl-core", version = "0.10.0", default-features = false }
-cubecl-ir = { path = "../cubecl-ir", version = "0.10.0", default-features = false }
+cubecl-common = { package = "t4a-cubecl-common", path = "../cubecl-common", version = "0.10.0", default-features = false }
+cubecl-core = { package = "t4a-cubecl-core", path = "../cubecl-core", version = "0.10.0", default-features = false }
+cubecl-ir = { package = "t4a-cubecl-ir", path = "../cubecl-ir", version = "0.10.0", default-features = false }
 
 float-ord = "0.3"
 log = "0.4"

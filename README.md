@@ -1,3 +1,9 @@
+> **tensor4all temporary fork.** The `t4a-cubecl*` crates published from this
+> repository are temporary tensor4all fork packages used by `tenferro-rs` while
+> required patches are being upstreamed to the official CubeCL project. They are
+> not a replacement for upstream CubeCL, and the intent is to return to upstream
+> package names once the needed patches have landed.
+
 <div align="center">
 <img src="./assets/logo.drawio.svg" width="400px"/>
 

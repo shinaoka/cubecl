@@ -1,3 +1,5 @@
+> **tensor4all temporary fork.** This `t4a-cubecl*` package is a temporary tensor4all fork used by `tenferro-rs` while required patches are being upstreamed to the official CubeCL project. It is not a replacement for upstream CubeCL.
+
 # Cuda runtime
 
 The runtime uses the lower level primitives from [cudarc](https://github.com/coreylowman/cudarc) to compile generated CUDA code into a ptx and execute it at runtime.

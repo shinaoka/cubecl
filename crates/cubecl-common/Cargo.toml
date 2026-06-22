@@ -4,14 +4,18 @@ authors = [
     "Nathaniel Simard (@nathanielsimard)",
 ]
 categories = ["science", "mathematics", "algorithms"]
-description = "Common crate for CubeCL"
+description = "Temporary tensor4all fork of CubeCL common utilities"
 edition.workspace = true
 keywords = ["gpu", "cuda", "wgpu"]
 license.workspace = true
-name = "cubecl-common"
-readme.workspace = true
-repository = "https://github.com/tracel-ai/cubecl/tree/main/crates/cubecl-common"
+name = "t4a-cubecl-common"
+readme = "README.md"
+repository = "https://github.com/tensor4all/cubecl/tree/main/crates/cubecl-common"
 version.workspace = true
+
+
+[lib]
+name = "cubecl_common"
 
 
 [lints]
