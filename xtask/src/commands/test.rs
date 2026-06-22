@@ -15,20 +15,22 @@ pub(crate) fn handle_command(
     if args.miri.is_some() {
         // miri tests
         args.target = Target::Crates;
-        args.only.extend(vec!["cubecl-common".to_string()]);
+        args.only.extend(vec!["t4a-cubecl-common".to_string()]);
         base_commands::test::handle_command(args.try_into().unwrap(), env, context)?;
     } else {
         // conventional tests
         if args.ci {
             // Exclude crates that are not supported on CI
-            args.exclude
-                .extend(vec!["cubecl-cuda".to_string(), "cubecl-hip".to_string()]);
+            args.exclude.extend(vec![
+                "t4a-cubecl-cuda".to_string(),
+                "cubecl-hip".to_string(),
+            ]);
         }
         base_commands::test::handle_command(args.try_into().unwrap(), env, context)?;
         // Specific additional commands to test specific features
         // cubecl-wgpu with exclusive-memory-only
         helpers::custom_crates_tests(
-            vec!["cubecl-wgpu"],
+            vec!["t4a-cubecl-wgpu"],
             vec!["--features", "exclusive-memory-only", "--lib"],
             None,
             None,
