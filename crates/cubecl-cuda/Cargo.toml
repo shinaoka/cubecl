@@ -74,4 +74,4 @@ pretty_assertions = { workspace = true }
 test-log = { workspace = true, features = ["trace"] }
 
 [build-dependencies]
-cudarc = { workspace = true }
+cudarc = { version = "0.19.0", default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-12080"] }
