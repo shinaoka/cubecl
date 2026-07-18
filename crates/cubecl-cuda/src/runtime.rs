@@ -31,8 +31,54 @@ use cubecl_cpp::{
 use cubecl_runtime::{
     allocator::PitchedMemoryLayoutPolicy, client::ComputeClient, logging::ServerLogger,
 };
-use cudarc::driver::sys::{CUDA_VERSION, cuDeviceTotalMem_v2};
+use cudarc::driver::sys::{cuDeviceTotalMem_v2, cuDriverGetVersion};
 use std::{mem::MaybeUninit, sync::Arc};
+
+const CUDA_12_8: i32 = 12080;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CudaApiVersions {
+    driver: i32,
+    nvrtc: i32,
+}
+
+impl CudaApiVersions {
+    const fn new(driver: i32, nvrtc: i32) -> Self {
+        Self { driver, nvrtc }
+    }
+
+    const fn effective(self) -> i32 {
+        if self.driver < self.nvrtc {
+            self.driver
+        } else {
+            self.nvrtc
+        }
+    }
+
+    pub(crate) const fn supports_cuda_12_8(self) -> bool {
+        self.effective() >= CUDA_12_8
+    }
+
+    fn detect() -> Self {
+        let mut driver = 0;
+        let mut nvrtc_major = 0;
+        let mut nvrtc_minor = 0;
+
+        // SAFETY: Both functions only write integer version components to the
+        // valid output pointers supplied here. The CUDA driver is initialized
+        // immediately before this query in `CudaServer::init`.
+        unsafe {
+            cuDriverGetVersion(&mut driver)
+                .result()
+                .expect("failed to query CUDA driver version");
+            cudarc::nvrtc::sys::nvrtcVersion(&mut nvrtc_major, &mut nvrtc_minor)
+                .result()
+                .expect("failed to query NVRTC version");
+        }
+
+        Self::new(driver, nvrtc_major * 1000 + nvrtc_minor * 10)
+    }
+}
 
 /// Options configuring the CUDA runtime.
 #[derive(Default)]
@@ -51,6 +97,7 @@ impl DeviceService for CudaServer {
 
         // To get the supported WMMA features, and memory properties, we have to initialize the server immediately.
         cudarc::driver::result::init().unwrap();
+        let cuda_api_versions = CudaApiVersions::detect();
         let device_index = device.index as i32;
         let device_ptr = cudarc::driver::result::device::get(device_index).unwrap();
         let arch_major;
@@ -217,7 +264,7 @@ impl DeviceService for CudaServer {
                 .matmul
                 .ldmatrix
                 .insert(ElemType::Float(FloatKind::BF16).into());
-            comp_opts.supports_features.fast_tanh = CUDA_VERSION >= 12080;
+            comp_opts.supports_features.fast_tanh = cuda_api_versions.supports_cuda_12_8();
         }
 
         if arch_version >= 80 {
@@ -265,7 +312,7 @@ impl DeviceService for CudaServer {
             );
         }
 
-        if arch_version >= 100 {
+        if arch_version >= 100 && cuda_api_versions.supports_cuda_12_8() {
             device_props.features.tma.insert(Tma::Im2colWide);
             // Breaks swizzle so disable for now and fix in a PR specifically for this
             // if CUDA_VERSION >= 12090 {
@@ -296,7 +343,7 @@ impl DeviceService for CudaServer {
                 TypeUsage::Conversion | TypeUsage::Buffer,
             );
 
-            if CUDA_VERSION >= 12080 {
+            if cuda_api_versions.supports_cuda_12_8() {
                 device_props.features.tma.insert(Tma::SwizzleAtomicity);
             }
         }
@@ -320,6 +367,7 @@ impl DeviceService for CudaServer {
 
         CudaServer::new(
             cuda_ctx,
+            cuda_api_versions,
             mem_properties,
             options.memory_config,
             mem_alignment,
@@ -396,5 +444,28 @@ impl Runtime for CudaRuntime {
                 index_id: i as u16,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CudaApiVersions;
+
+    #[test]
+    fn cuda_12_8_capabilities_require_both_driver_and_nvrtc() {
+        let cases = [
+            (12040, 12040, 12040, false),
+            (12060, 12060, 12060, false),
+            (12080, 12080, 12080, true),
+            (13000, 12080, 12080, true),
+            (12080, 12040, 12040, false),
+            (12040, 12080, 12040, false),
+        ];
+
+        for (driver, nvrtc, effective, supports_cuda_12_8) in cases {
+            let versions = CudaApiVersions::new(driver, nvrtc);
+            assert_eq!(versions.effective(), effective);
+            assert_eq!(versions.supports_cuda_12_8(), supports_cuda_12_8);
+        }
     }
 }
