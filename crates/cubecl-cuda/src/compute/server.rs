@@ -8,6 +8,7 @@ use crate::{
         stream::CudaStreamBackend,
         sync::Fence,
     },
+    runtime::CudaApiVersions,
 };
 use cubecl_common::{
     backtrace::BackTrace, bytes::Bytes, profile::ProfileDuration, stream_id::StreamId,
@@ -50,6 +51,7 @@ pub(crate) const MB: usize = 1024 * 1024;
 #[derive(Debug)]
 pub struct CudaServer {
     ctx: CudaContext,
+    cuda_api_versions: CudaApiVersions,
     device_id: DeviceId,
     streams: MultiStream<CudaStreamBackend>,
     utilities: Arc<ServerUtilities<Self>>,
@@ -555,6 +557,7 @@ impl CudaServer {
     /// Create a new cuda server.
     pub(crate) fn new(
         ctx: CudaContext,
+        cuda_api_versions: CudaApiVersions,
         mem_props: MemoryDeviceProperties,
         mem_config: MemoryConfiguration,
         mem_alignment: usize,
@@ -573,6 +576,7 @@ impl CudaServer {
 
         Self {
             ctx,
+            cuda_api_versions,
             device_id,
             streams: MultiStream::new(
                 utilities.logger.clone(),
@@ -663,6 +667,7 @@ impl CudaServer {
             .compilation_options
             .supports_features
             .grid_constants;
+        let supports_cuda_12_8 = self.cuda_api_versions.supports_cuda_12_8();
         let mut command = self.command(
             stream_id,
             bindings.buffers.iter(),
@@ -745,6 +750,25 @@ impl CudaServer {
                 .map(|s| *s as u64 * map.storage_ty.size() as u64)
                 .collect();
             let elem_stride: Vec<_> = map.elem_stride.iter().rev().map(|s| *s as u32).collect();
+
+            #[cfg(cuda_12080)]
+            if !supports_cuda_12_8
+                && (matches!(&map.format, TensorMapFormat::Im2colWide(_))
+                    || matches!(
+                        map.swizzle,
+                        TensorMapSwizzle::B128Atom32B
+                            | TensorMapSwizzle::B128Atom32BFlip8B
+                            | TensorMapSwizzle::B128Atom64B
+                    )
+                    || matches!(map.storage_ty, StorageType::Packed(ty, 2) if ty.size_bits() == 4))
+            {
+                return Err(LaunchError::Unknown {
+                    reason: "CUDA driver and NVRTC 12.8 or newer are required for this tensor map"
+                        .into(),
+                    backtrace: BackTrace::capture(),
+                }
+                .into());
+            }
 
             match &map.format {
                 // SAFETY: `map_ptr` is a zeroed `MaybeUninit<CUtensorMap>`. `device_ptr` is a
