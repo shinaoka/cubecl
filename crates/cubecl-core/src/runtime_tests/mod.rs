@@ -83,6 +83,7 @@ macro_rules! testgen_all {
                 type UintType = $uint;
 
                 $crate::testgen_uint!();
+                $crate::testgen_branch_u8!($uint);
             })*
         }
         $crate::testgen_untyped!();

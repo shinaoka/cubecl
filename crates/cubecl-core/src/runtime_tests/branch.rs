@@ -283,18 +283,6 @@ macro_rules! testgen_branch {
         }
 
         #[$crate::runtime_tests::test_log::test]
-        fn test_if_literal_u8_true() {
-            let client = TestRuntime::client(&Default::default());
-            cubecl_core::runtime_tests::branch::test_if_literal_u8::<TestRuntime>(client, true);
-        }
-
-        #[$crate::runtime_tests::test_log::test]
-        fn test_if_literal_u8_false() {
-            let client = TestRuntime::client(&Default::default());
-            cubecl_core::runtime_tests::branch::test_if_literal_u8::<TestRuntime>(client, false);
-        }
-
-        #[$crate::runtime_tests::test_log::test]
         fn test_switch_const() {
             let client = TestRuntime::client(&Default::default());
             cubecl_core::runtime_tests::branch::test_switch_const::<TestRuntime, FloatType>(client);
@@ -308,4 +296,23 @@ macro_rules! testgen_branch {
             );
         }
     };
+}
+
+#[allow(missing_docs)]
+#[macro_export]
+macro_rules! testgen_branch_u8 {
+    (u8) => {
+        #[$crate::runtime_tests::test_log::test]
+        fn test_if_literal_u8_true() {
+            let client = TestRuntime::client(&Default::default());
+            cubecl_core::runtime_tests::branch::test_if_literal_u8::<TestRuntime>(client, true);
+        }
+
+        #[$crate::runtime_tests::test_log::test]
+        fn test_if_literal_u8_false() {
+            let client = TestRuntime::client(&Default::default());
+            cubecl_core::runtime_tests::branch::test_if_literal_u8::<TestRuntime>(client, false);
+        }
+    };
+    ($uint:ident) => {};
 }
