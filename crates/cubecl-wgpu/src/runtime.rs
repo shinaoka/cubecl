@@ -25,8 +25,13 @@ pub struct WgpuRuntime;
 impl DeviceService for WgpuServer {
     fn init(device_id: cubecl_common::device::DeviceId) -> Self {
         let device = WgpuDevice::from_id(device_id);
-        let setup = future::block_on(create_setup_for_device(&device, AutoGraphicsApi::backend()));
-        create_server(setup, RuntimeOptions::default())
+        let options = RuntimeOptions::default();
+        let setup = future::block_on(create_setup_for_device(
+            &device,
+            AutoGraphicsApi::backend(),
+            options.primary_memory,
+        ));
+        create_server(setup, options)
     }
 
     fn utilities(&self) -> ServerUtilitiesHandle {
@@ -174,12 +179,24 @@ fn enumerate_all_adapters(instance: wgpu::Instance, backend: wgpu::Backend) -> V
     cubecl_common::future::block_on(instance.enumerate_adapters(backend.into()))
 }
 
+/// Controls where WGPU primary-memory allocations are placed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PrimaryMemoryMode {
+    /// Preserve the standard device-local WGPU allocation behavior.
+    #[default]
+    DeviceLocal,
+    /// Allocate exclusive primary buffers that can be mapped directly by the host.
+    HostVisible,
+}
+
 /// The values that control how a WGPU Runtime will perform its calculations.
 pub struct RuntimeOptions {
     /// Control the amount of compute tasks to be aggregated into a single GPU command.
     pub tasks_max: usize,
     /// Configures the memory management.
     pub memory_config: MemoryConfiguration,
+    /// Configures whether primary allocations are device-local or host-visible.
+    pub primary_memory: PrimaryMemoryMode,
 }
 
 impl Default for RuntimeOptions {
@@ -199,6 +216,7 @@ impl Default for RuntimeOptions {
         Self {
             tasks_max,
             memory_config: MemoryConfiguration::default(),
+            primary_memory: PrimaryMemoryMode::DeviceLocal,
         }
     }
 }
@@ -265,7 +283,7 @@ pub async fn init_setup_async<G: GraphicsApi>(
     device: &WgpuDevice,
     options: RuntimeOptions,
 ) -> WgpuSetup {
-    let setup = create_setup_for_device(device, G::backend()).await;
+    let setup = create_setup_for_device(device, G::backend(), options.primary_memory).await;
     let return_setup = setup.clone();
     let server = create_server(setup, options);
     let _ = ComputeClient::<WgpuRuntime>::init(device, server);
@@ -273,6 +291,15 @@ pub async fn init_setup_async<G: GraphicsApi>(
 }
 
 pub(crate) fn create_server(setup: WgpuSetup, options: RuntimeOptions) -> WgpuServer {
+    if options.primary_memory == PrimaryMemoryMode::HostVisible
+        && !setup
+            .device
+            .features()
+            .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+    {
+        panic!("{}", backend::HOST_VISIBLE_PRIMARY_UNSUPPORTED);
+    }
+
     let limits = setup.device.limits();
     let adapter_limits = setup.adapter.limits();
     let mut adapter_info = setup.adapter.get_info();
@@ -377,6 +404,7 @@ pub(crate) fn create_server(setup: WgpuSetup, options: RuntimeOptions) -> WgpuSe
         setup.device.clone(),
         setup.queue,
         options.tasks_max,
+        options.primary_memory,
         setup.backend,
         time_measurement,
         ServerUtilities::new(device_props, logger, setup.backend, allocator),
@@ -388,9 +416,10 @@ pub(crate) fn create_server(setup: WgpuSetup, options: RuntimeOptions) -> WgpuSe
 pub(crate) async fn create_setup_for_device(
     device: &WgpuDevice,
     backend: wgpu::Backend,
+    primary_memory: PrimaryMemoryMode,
 ) -> WgpuSetup {
     let (instance, adapter) = request_adapter(device, backend).await;
-    let (device, queue) = backend::request_device(&adapter).await;
+    let (device, queue) = backend::request_device(&adapter, primary_memory).await;
 
     log::info!(
         "Created wgpu compute server on device {:?} => {:?}",
@@ -604,4 +633,17 @@ fn get_device_override() -> Option<WgpuDevice> {
             }
             override_device
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_options_default_to_device_local_primary_memory() {
+        assert_eq!(
+            RuntimeOptions::default().primary_memory,
+            PrimaryMemoryMode::DeviceLocal
+        );
+    }
 }

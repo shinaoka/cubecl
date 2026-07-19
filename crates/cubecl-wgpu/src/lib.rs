@@ -3,9 +3,6 @@
 // publish closure.
 #![allow(unexpected_cfgs)]
 
-#[macro_use]
-extern crate derive_new;
-
 extern crate alloc;
 
 mod backend;

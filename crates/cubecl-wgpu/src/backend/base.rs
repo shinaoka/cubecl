@@ -1,6 +1,5 @@
 use super::wgsl;
-use crate::AutoRepresentationRef;
-use crate::WgpuServer;
+use crate::{AutoRepresentationRef, PrimaryMemoryMode, WgpuServer};
 use cubecl_core::MemoryConfiguration;
 use cubecl_core::{
     ExecutionMode, WgpuCompilationOptions, hash::StableHash, server::KernelArguments,
@@ -234,41 +233,77 @@ impl WgpuServer {
     }
 }
 
-pub async fn request_device(adapter: &Adapter) -> (Device, Queue) {
-    if let Some(result) = request_vulkan_device(adapter).await {
+pub(crate) const HOST_VISIBLE_PRIMARY_UNSUPPORTED: &str = "Host-visible primary memory requires wgpu::Features::MAPPABLE_PRIMARY_BUFFERS, but the selected adapter or device does not support it.";
+
+pub(crate) fn requested_features(
+    adapter: &Adapter,
+    primary_memory: PrimaryMemoryMode,
+) -> wgpu::Features {
+    let features = adapter.features();
+    match primary_memory {
+        PrimaryMemoryMode::DeviceLocal => {
+            features.difference(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+        }
+        PrimaryMemoryMode::HostVisible => {
+            if !features.contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS) {
+                panic!("{HOST_VISIBLE_PRIMARY_UNSUPPORTED}");
+            }
+            features
+        }
+    }
+}
+
+pub async fn request_device(
+    adapter: &Adapter,
+    primary_memory: PrimaryMemoryMode,
+) -> (Device, Queue) {
+    let _ = requested_features(adapter, primary_memory);
+    if let Some(result) = request_vulkan_device(adapter, primary_memory).await {
         return result;
     }
-    if let Some(result) = request_metal_device(adapter).await {
+    if let Some(result) = request_metal_device(adapter, primary_memory).await {
         return result;
     }
-    wgsl::request_device(adapter).await
+    wgsl::request_device(adapter, primary_memory).await
 }
 
 #[cfg(feature = "spirv")]
-async fn request_vulkan_device(adapter: &Adapter) -> Option<(Device, Queue)> {
+async fn request_vulkan_device(
+    adapter: &Adapter,
+    primary_memory: PrimaryMemoryMode,
+) -> Option<(Device, Queue)> {
     if is_vulkan(adapter) {
-        vulkan::request_vulkan_device(adapter).await
+        vulkan::request_vulkan_device(adapter, primary_memory).await
     } else {
         None
     }
 }
 
 #[cfg(not(feature = "spirv"))]
-async fn request_vulkan_device(_adapter: &Adapter) -> Option<(Device, Queue)> {
+async fn request_vulkan_device(
+    _adapter: &Adapter,
+    _primary_memory: PrimaryMemoryMode,
+) -> Option<(Device, Queue)> {
     None
 }
 
 #[cfg(all(feature = "msl", target_os = "macos"))]
-async fn request_metal_device(adapter: &Adapter) -> Option<(Device, Queue)> {
+async fn request_metal_device(
+    adapter: &Adapter,
+    primary_memory: PrimaryMemoryMode,
+) -> Option<(Device, Queue)> {
     if is_metal(adapter) {
-        Some(metal::request_metal_device(adapter).await)
+        Some(metal::request_metal_device(adapter, primary_memory).await)
     } else {
         None
     }
 }
 
 #[cfg(not(all(feature = "msl", target_os = "macos")))]
-async fn request_metal_device(_adapter: &Adapter) -> Option<(Device, Queue)> {
+async fn request_metal_device(
+    _adapter: &Adapter,
+    _primary_memory: PrimaryMemoryMode,
+) -> Option<(Device, Queue)> {
     None
 }
 

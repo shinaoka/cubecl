@@ -66,7 +66,6 @@ cubecl-cpp = { package = "t4a-cubecl-cpp", path = "../cubecl-cpp", version = "0.
 bytemuck = { workspace = true }
 
 async-channel = { workspace = true }
-derive-new = { workspace = true }
 hashbrown = { workspace = true }
 
 cfg-if = { workspace = true }

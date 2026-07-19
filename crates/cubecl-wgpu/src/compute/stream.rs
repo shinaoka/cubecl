@@ -46,11 +46,13 @@ pub struct WgpuStream {
 
 impl WgpuStream {
     /// Creates a new WGPU stream.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         memory_properties: MemoryDeviceProperties,
         memory_config: MemoryConfiguration,
+        primary_memory: crate::PrimaryMemoryMode,
         timing_method: TimingMethod,
         tasks_max: usize,
         logger: Arc<ServerLogger>,
@@ -71,8 +73,13 @@ impl WgpuStream {
         let poll = WgpuPoll::new(device.clone());
 
         #[allow(unused_mut)]
-        let mut mem_manage =
-            WgpuMemManager::new(device.clone(), memory_properties, memory_config, logger);
+        let mut mem_manage = WgpuMemManager::new(
+            device.clone(),
+            memory_properties,
+            memory_config,
+            primary_memory,
+            logger,
+        );
 
         Self {
             mem_manage,
@@ -102,6 +109,10 @@ impl WgpuStream {
     pub fn enqueue_task(&mut self, task: ScheduleTask) {
         match task {
             ScheduleTask::Write { data, buffer } => {
+                if let Err(err) = buffer.ensure_gpu_access() {
+                    self.error(err.into());
+                    return;
+                }
                 // It is important to flush before writing, as the write operation is inserted
                 // into the QUEUE not the encoder. We want to make sure all outstanding work
                 // happens _before_ the write operation.
@@ -118,8 +129,16 @@ impl WgpuStream {
                 count,
                 resources,
             } => {
-                let resources = resources.into_resources(self);
-                self.register_pipeline(pipeline, resources.iter(), &count);
+                let resources = match resources.into_resources(self) {
+                    Ok(resources) => resources,
+                    Err(err) => {
+                        self.error(err.into());
+                        return;
+                    }
+                };
+                if let Err(err) = self.register_pipeline(pipeline, resources.iter(), &count) {
+                    self.error(err.into());
+                }
             }
         }
     }
@@ -143,6 +162,9 @@ impl WgpuStream {
         let mut callbacks = Vec::with_capacity(descriptors.len());
 
         for (resource, shape, elem_size) in descriptors {
+            if let Err(err) = resource.ensure_gpu_access() {
+                return Box::pin(async move { Err(err.into()) });
+            }
             let size = shape.iter().product::<usize>() * elem_size;
 
             // Zero-sized resources don't need a GPU copy.
@@ -526,18 +548,29 @@ impl WgpuStream {
         pipeline: Arc<ComputePipeline>,
         resources: impl Iterator<Item = &'a WgpuResource>,
         dispatch: &CubeCount,
-    ) {
+    ) -> Result<(), crate::HostAccessError> {
         if dispatch.is_empty() {
-            return;
+            return Ok(());
         }
+
+        let indirect = match dispatch.clone() {
+            CubeCount::Dynamic(binding) => {
+                let resource = self.mem_manage.get_resource(binding).unwrap();
+                resource.ensure_gpu_access()?;
+                Some(resource)
+            }
+            CubeCount::Static(..) => None,
+        };
 
         let entries = resources
             .enumerate()
-            .map(|(i, r)| wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: r.as_wgpu_bind_resource(),
+            .map(|(i, r)| {
+                Ok(wgpu::BindGroupEntry {
+                    binding: i as u32,
+                    resource: r.try_as_wgpu_bind_resource()?,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, crate::HostAccessError>>()?;
 
         // Start a new compute pass if needed. The forget_lifetime allows
         // to store this with a 'static lifetime, but the compute pass must
@@ -578,12 +611,13 @@ impl WgpuStream {
             CubeCount::Static(x, y, z) => {
                 pass.dispatch_workgroups(x, y, z);
             }
-            CubeCount::Dynamic(binding) => {
-                let res = self.mem_manage.get_resource(binding).unwrap();
+            CubeCount::Dynamic(_) => {
+                let res = indirect.expect("dynamic dispatch resource was prepared");
                 pass.dispatch_workgroups_indirect(&res.buffer, res.offset);
             }
         }
         self.flush_if_needed();
+        Ok(())
     }
 
     pub(crate) fn flush_errors_queue(&mut self) -> Vec<ServerError> {

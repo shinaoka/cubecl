@@ -16,11 +16,14 @@ use wgpu::{
     hal::{self, Adapter, metal},
 };
 
-pub async fn request_metal_device(adapter: &wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
+use crate::{PrimaryMemoryMode, backend::requested_features};
+
+pub async fn request_metal_device(
+    adapter: &wgpu::Adapter,
+    primary_memory: PrimaryMemoryMode,
+) -> (wgpu::Device, wgpu::Queue) {
     let limits = adapter.limits();
-    let features = adapter
-        .features()
-        .difference(Features::MAPPABLE_PRIMARY_BUFFERS);
+    let features = requested_features(adapter, primary_memory);
     unsafe {
         let hal_adapter = adapter.as_hal::<hal::api::Metal>().unwrap();
         request_device(adapter, &hal_adapter, features, limits)

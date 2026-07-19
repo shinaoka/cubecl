@@ -1,4 +1,4 @@
-use crate::{WgpuResource, WgpuStorage};
+use crate::{PrimaryMemoryMode, WgpuResource, WgpuStorage};
 use cubecl_common::stub::Arc;
 use cubecl_core::{
     MemoryConfiguration,
@@ -28,22 +28,42 @@ impl WgpuMemManager {
         device: wgpu::Device,
         memory_properties: MemoryDeviceProperties,
         memory_config: MemoryConfiguration,
+        primary_memory: PrimaryMemoryMode,
         logger: Arc<ServerLogger>,
     ) -> Self {
-        // Allocate storage & memory management for the main memory buffers. Any calls
-        // to empty() or create() with a small enough size will be allocated from this
-        // main memory pool.
-        let memory_main = MemoryManagement::from_configuration(
-            WgpuStorage::new(
-                memory_properties.alignment as usize,
-                device.clone(),
+        let (memory_config_main, main_usages, host_visible) = match primary_memory {
+            PrimaryMemoryMode::DeviceLocal => (
+                memory_config,
                 BufferUsages::STORAGE
                     | BufferUsages::COPY_SRC
                     | BufferUsages::COPY_DST
                     | BufferUsages::INDIRECT,
+                false,
+            ),
+            PrimaryMemoryMode::HostVisible => (
+                MemoryConfiguration::ExclusivePages,
+                BufferUsages::STORAGE
+                    | BufferUsages::COPY_SRC
+                    | BufferUsages::COPY_DST
+                    | BufferUsages::INDIRECT
+                    | BufferUsages::MAP_READ
+                    | BufferUsages::MAP_WRITE,
+                true,
+            ),
+        };
+
+        // Allocate storage & memory management for the main memory buffers. Any calls
+        // to empty() or create() with a small enough size will be allocated from this
+        // main memory pool.
+        let memory_main = MemoryManagement::from_configuration(
+            WgpuStorage::new_with_host_visibility(
+                memory_properties.alignment as usize,
+                device.clone(),
+                main_usages,
+                host_visible,
             ),
             &memory_properties,
-            memory_config,
+            memory_config_main,
             logger.clone(),
             MemoryManagementOptions::new("Main GPU Memory"),
         );

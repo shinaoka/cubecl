@@ -1,6 +1,6 @@
 use super::storage::{WgpuResource, WgpuStorage};
 use crate::schedule::{BindingsResource, ScheduleTask, ScheduledWgpuBackend};
-use crate::{AutoCompiler, AutoRepresentation};
+use crate::{AutoCompiler, AutoRepresentation, PrimaryMemoryMode};
 use alloc::sync::Arc;
 use cubecl_common::{
     backtrace::BackTrace,
@@ -68,6 +68,7 @@ impl WgpuServer {
         device: wgpu::Device,
         queue: wgpu::Queue,
         tasks_max: usize,
+        primary_memory: PrimaryMemoryMode,
         backend: wgpu::Backend,
         timing_method: TimingMethod,
         utilities: ServerUtilities<Self>,
@@ -77,6 +78,7 @@ impl WgpuServer {
             queue.clone(),
             memory_properties,
             memory_config,
+            primary_memory,
             timing_method,
             tasks_max,
             utilities.logger.clone(),
@@ -117,7 +119,10 @@ impl WgpuServer {
         }
     }
 
-    fn prepare_bindings(&mut self, bindings: KernelArguments) -> Result<BindingsResource, IoError> {
+    fn prepare_bindings(
+        &mut self,
+        bindings: KernelArguments,
+    ) -> Result<BindingsResource, ServerError> {
         // Store all the resources we'll be using. This could be eliminated if
         // there was a way to tie the lifetime of the resource to the memory handle.
         let mut resources = Vec::with_capacity(bindings.buffers.len());
@@ -125,6 +130,7 @@ impl WgpuServer {
         for b in bindings.buffers.into_iter() {
             let stream = self.scheduler.stream(&b.stream);
             let resource = stream.mem_manage.get_resource(b)?;
+            resource.ensure_gpu_access()?;
             resources.push(resource);
         }
 
@@ -295,6 +301,9 @@ impl ComputeServer for WgpuServer {
                 Ok(val) => val,
                 Err(err) => return Box::pin(async move { Err(err.into()) }),
             };
+            if let Err(err) = resource.ensure_gpu_access() {
+                return Box::pin(async move { Err(err.into()) });
+            }
             resources.push((resource, desc.shape, desc.elem_size));
         }
 
@@ -322,6 +331,10 @@ impl ComputeServer for WgpuServer {
                     return;
                 }
             };
+            if let Err(err) = resource.ensure_gpu_access() {
+                stream.error(err.into());
+                return;
+            }
             let task = ScheduleTask::Write {
                 data,
                 buffer: resource,
@@ -376,7 +389,7 @@ impl ComputeServer for WgpuServer {
             Err(err) => {
                 // We make the stream that would execute the kernel in error.
                 let stream = self.scheduler.stream(&stream_id);
-                stream.errors.push(ServerError::Io(err));
+                stream.errors.push(err);
                 return;
             }
         };
