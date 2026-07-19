@@ -1,4 +1,4 @@
-use crate::{WgpuResource, stream::WgpuStream};
+use crate::{GpuAccessToken, HostAccessError, PrimaryMemoryMode, WgpuResource, stream::WgpuStream};
 use alloc::sync::Arc;
 use cubecl_common::{bytes::Bytes, profile::TimingMethod};
 use cubecl_core::{
@@ -19,6 +19,8 @@ pub enum ScheduleTask {
         data: Bytes,
         /// The target buffer resource.
         buffer: WgpuResource,
+        /// Reservation held until the queue write is submitted.
+        reservation: GpuAccessToken,
     },
     /// Represents a task to execute a compute pipeline.
     Execute {
@@ -50,6 +52,7 @@ impl core::fmt::Debug for ScheduleTask {
 pub struct BindingsResource {
     /// List of WGPU resources used in the task.
     pub resources: Vec<WgpuResource>,
+    pub(crate) reservations: Vec<GpuAccessToken>,
     /// Metadata for uniform bindings.
     pub info: MetadataBindingInfo,
 }
@@ -68,6 +71,7 @@ pub struct WgpuStreamFactory {
     queue: wgpu::Queue,
     memory_properties: MemoryDeviceProperties,
     memory_config: MemoryConfiguration,
+    primary_memory: PrimaryMemoryMode,
     timing_method: TimingMethod,
     tasks_max: usize,
     logger: Arc<ServerLogger>,
@@ -85,6 +89,7 @@ impl StreamFactory for WgpuStreamFactory {
             self.queue.clone(),
             self.memory_properties.clone(),
             self.memory_config.clone(),
+            self.primary_memory,
             self.timing_method,
             self.tasks_max,
             self.logger.clone(),
@@ -94,11 +99,13 @@ impl StreamFactory for WgpuStreamFactory {
 
 impl ScheduledWgpuBackend {
     /// Creates a new `ScheduledWgpuBackend` with the given WGPU device, queue, and configurations.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         memory_properties: MemoryDeviceProperties,
         memory_config: MemoryConfiguration,
+        primary_memory: PrimaryMemoryMode,
         timing_method: TimingMethod,
         tasks_max: usize,
         logger: Arc<ServerLogger>,
@@ -109,6 +116,7 @@ impl ScheduledWgpuBackend {
                 queue,
                 memory_properties,
                 memory_config,
+                primary_memory,
                 timing_method,
                 tasks_max,
                 logger,
@@ -120,15 +128,19 @@ impl ScheduledWgpuBackend {
 
 impl BindingsResource {
     /// Converts metadata and scalar bindings into WGPU resources for a stream.
-    pub fn into_resources(mut self, stream: &mut WgpuStream) -> Vec<WgpuResource> {
+    pub fn into_resources(
+        mut self,
+        stream: &mut WgpuStream,
+    ) -> Result<(Vec<WgpuResource>, Vec<GpuAccessToken>), HostAccessError> {
         // If metadata contains data, create a uniform buffer for it.
         if !self.info.data.is_empty() {
             let info = stream.create_uniform(bytemuck::cast_slice(&self.info.data));
+            self.reservations.push(info.acquire_gpu()?);
             self.resources.push(info);
         }
 
         // Return the complete list of resources.
-        self.resources
+        Ok((self.resources, self.reservations))
     }
 }
 

@@ -1,5 +1,7 @@
 use super::{mem_manager::WgpuMemManager, poll::WgpuPoll, timings::QueryProfiler};
-use crate::{WgpuResource, controller::WgpuAllocController, schedule::ScheduleTask};
+use crate::{
+    GpuAccessToken, WgpuResource, controller::WgpuAllocController, schedule::ScheduleTask,
+};
 use cubecl_common::{
     backtrace::BackTrace,
     bytes::Bytes,
@@ -42,15 +44,21 @@ pub struct WgpuStream {
     /// Used to prevent wgpu staging buffer pool exhaustion during bulk writes
     /// (e.g. model loading with hundreds of tensors).
     pending_write_count: usize,
+    /// GPU access reservations held until the associated commands are submitted.
+    pending_gpu_reservations: Vec<GpuAccessToken>,
+    /// GPU access reservations held until direct queue writes are submitted.
+    pending_write_gpu_reservations: Vec<GpuAccessToken>,
 }
 
 impl WgpuStream {
     /// Creates a new WGPU stream.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         memory_properties: MemoryDeviceProperties,
         memory_config: MemoryConfiguration,
+        primary_memory: crate::PrimaryMemoryMode,
         timing_method: TimingMethod,
         tasks_max: usize,
         logger: Arc<ServerLogger>,
@@ -71,8 +79,13 @@ impl WgpuStream {
         let poll = WgpuPoll::new(device.clone());
 
         #[allow(unused_mut)]
-        let mut mem_manage =
-            WgpuMemManager::new(device.clone(), memory_properties, memory_config, logger);
+        let mut mem_manage = WgpuMemManager::new(
+            device.clone(),
+            memory_properties,
+            memory_config,
+            primary_memory,
+            logger,
+        );
 
         Self {
             mem_manage,
@@ -91,6 +104,8 @@ impl WgpuStream {
             poll,
             submission_load: SubmissionLoad::default(),
             pending_write_count: 0,
+            pending_gpu_reservations: Vec::new(),
+            pending_write_gpu_reservations: Vec::new(),
         }
     }
 
@@ -101,7 +116,11 @@ impl WgpuStream {
     /// * `task` - The task to execute.
     pub fn enqueue_task(&mut self, task: ScheduleTask) {
         match task {
-            ScheduleTask::Write { data, buffer } => {
+            ScheduleTask::Write {
+                data,
+                buffer,
+                reservation,
+            } => {
                 // It is important to flush before writing, as the write operation is inserted
                 // into the QUEUE not the encoder. We want to make sure all outstanding work
                 // happens _before_ the write operation.
@@ -111,15 +130,25 @@ impl WgpuStream {
                         flush: false,
                     })
                     .ok();
-                self.write_to_buffer(&buffer, &data);
+                self.write_to_buffer(&buffer, &data, reservation);
             }
             ScheduleTask::Execute {
                 pipeline,
                 count,
                 resources,
             } => {
-                let resources = resources.into_resources(self);
-                self.register_pipeline(pipeline, resources.iter(), &count);
+                let (resources, reservations) = match resources.into_resources(self) {
+                    Ok(resources) => resources,
+                    Err(err) => {
+                        self.error(err.into());
+                        return;
+                    }
+                };
+                if let Err(err) =
+                    self.register_pipeline(pipeline, resources.iter(), reservations, &count)
+                {
+                    self.error(err.into());
+                }
             }
         }
     }
@@ -143,6 +172,10 @@ impl WgpuStream {
         let mut callbacks = Vec::with_capacity(descriptors.len());
 
         for (resource, shape, elem_size) in descriptors {
+            let reservation = match resource.acquire_gpu() {
+                Ok(reservation) => reservation,
+                Err(err) => return Box::pin(async move { Err(err.into()) }),
+            };
             let size = shape.iter().product::<usize>() * elem_size;
 
             // Zero-sized resources don't need a GPU copy.
@@ -165,6 +198,7 @@ impl WgpuStream {
                 0,
                 aligned_len,
             );
+            self.pending_gpu_reservations.push(reservation);
             staging_info.push(Some((staging, binding, size)));
         }
 
@@ -375,7 +409,10 @@ impl WgpuStream {
 
     pub(crate) fn create_uniform(&mut self, data: &[u8]) -> WgpuResource {
         let resource = self.mem_manage.reserve_uniform(data.len() as u64);
-        self.write_to_buffer(&resource, data);
+        let reservation = resource
+            .acquire_gpu()
+            .expect("new uniform allocation cannot be host-mapped");
+        self.write_to_buffer(&resource, data, reservation);
         resource
     }
 
@@ -383,7 +420,12 @@ impl WgpuStream {
     // so you have to be really careful about the ordering of operations here.
     // Any buffer which has outstanding (not yet flushed) compute work should
     // NOT be copied to.
-    fn write_to_buffer(&mut self, resource: &WgpuResource, data: &[u8]) {
+    fn write_to_buffer(
+        &mut self,
+        resource: &WgpuResource,
+        data: &[u8],
+        reservation: GpuAccessToken,
+    ) {
         // Nothing to write for zero-sized resources.
         if resource.size == 0 {
             return;
@@ -416,6 +458,7 @@ impl WgpuStream {
         }
 
         self.pending_write_count += 1;
+        self.pending_write_gpu_reservations.push(reservation);
 
         // Prevent wgpu staging buffer pool exhaustion during bulk writes (e.g. model
         // loading with hundreds of tensors). queue.write_buffer() is async — wgpu
@@ -436,6 +479,7 @@ impl WgpuStream {
                         label: Some("CubeCL Write Flush Encoder"),
                     });
             let index = self.queue.submit([write_flush_encoder.finish()]);
+            self.pending_write_gpu_reservations.clear();
 
             // Wait for the GPU to finish processing these writes before continuing.
             #[cfg(not(target_family = "wasm"))]
@@ -465,7 +509,7 @@ impl WgpuStream {
     }
 
     pub fn flush(&mut self, mode: StreamErrorMode) -> Result<(), ServerError> {
-        if self.tasks_count == 0 {
+        if self.tasks_count == 0 && self.pending_write_count == 0 {
             return self.flush_errors(mode);
         }
 
@@ -485,6 +529,8 @@ impl WgpuStream {
 
         // This will _first_ fire off all pending write_buffer work.
         let index = self.queue.submit([tasks_encoder.finish()]);
+        self.pending_gpu_reservations.clear();
+        self.pending_write_gpu_reservations.clear();
 
         self.submission_load
             .regulate(&self.device, self.tasks_count, index);
@@ -525,19 +571,31 @@ impl WgpuStream {
         &mut self,
         pipeline: Arc<ComputePipeline>,
         resources: impl Iterator<Item = &'a WgpuResource>,
+        mut reservations: Vec<GpuAccessToken>,
         dispatch: &CubeCount,
-    ) {
+    ) -> Result<(), crate::HostAccessError> {
         if dispatch.is_empty() {
-            return;
+            return Ok(());
         }
+
+        let indirect = match dispatch.clone() {
+            CubeCount::Dynamic(binding) => {
+                let resource = self.mem_manage.get_resource(binding).unwrap();
+                reservations.push(resource.acquire_gpu()?);
+                Some(resource)
+            }
+            CubeCount::Static(..) => None,
+        };
 
         let entries = resources
             .enumerate()
-            .map(|(i, r)| wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: r.as_wgpu_bind_resource(),
+            .map(|(i, r)| {
+                Ok(wgpu::BindGroupEntry {
+                    binding: i as u32,
+                    resource: r.as_wgpu_bind_resource(),
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, crate::HostAccessError>>()?;
 
         // Start a new compute pass if needed. The forget_lifetime allows
         // to store this with a 'static lifetime, but the compute pass must
@@ -578,12 +636,14 @@ impl WgpuStream {
             CubeCount::Static(x, y, z) => {
                 pass.dispatch_workgroups(x, y, z);
             }
-            CubeCount::Dynamic(binding) => {
-                let res = self.mem_manage.get_resource(binding).unwrap();
+            CubeCount::Dynamic(_) => {
+                let res = indirect.expect("dynamic dispatch resource was prepared");
                 pass.dispatch_workgroups_indirect(&res.buffer, res.offset);
             }
         }
+        self.pending_gpu_reservations.extend(reservations);
         self.flush_if_needed();
+        Ok(())
     }
 
     pub(crate) fn flush_errors_queue(&mut self) -> Vec<ServerError> {

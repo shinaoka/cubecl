@@ -21,7 +21,7 @@ use wgpu::{
     },
 };
 
-use crate::{AutoCompiler, WgpuServer};
+use crate::{AutoCompiler, PrimaryMemoryMode, WgpuServer, backend::requested_features};
 
 mod features;
 
@@ -36,11 +36,12 @@ pub fn bindings(
     (buffers, meta, repr.uniform_info)
 }
 
-pub async fn request_vulkan_device(adapter: &wgpu::Adapter) -> Option<(wgpu::Device, wgpu::Queue)> {
+pub async fn request_vulkan_device(
+    adapter: &wgpu::Adapter,
+    primary_memory: PrimaryMemoryMode,
+) -> Option<(wgpu::Device, wgpu::Queue)> {
     let limits = adapter.limits();
-    let features = adapter
-        .features()
-        .difference(Features::MAPPABLE_PRIMARY_BUFFERS);
+    let features = requested_features(adapter, primary_memory);
     unsafe {
         let hal_adapter = adapter.as_hal::<hal::api::Vulkan>().unwrap();
         request_device(adapter, &hal_adapter, features, limits)
