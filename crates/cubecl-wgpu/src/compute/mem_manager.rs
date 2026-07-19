@@ -124,14 +124,17 @@ impl WgpuMemManager {
         let resource = self
             .memory_pool_staging
             .get_resource(binding.clone(), None, None)
-            .unwrap();
+            .unwrap()
+            .with_lease(binding.clone());
 
         Ok((resource, binding))
     }
 
     pub(crate) fn get_resource(&mut self, binding: Binding) -> Result<WgpuResource, IoError> {
+        let lease = binding.memory.clone();
         self.memory_pool
             .get_resource(binding.memory, binding.offset_start, binding.offset_end)
+            .map(|resource| resource.with_lease(lease))
     }
 
     pub(crate) fn reserve_uniform(&mut self, size: u64) -> WgpuResource {
@@ -141,11 +144,15 @@ impl WgpuMemManager {
             .expect("Must have enough memory for a uniform");
         // Keep track of this uniform until it is released.
         self.uniforms.push(slice.clone());
+        let binding = slice.binding();
         let handle = self
             .memory_uniforms
-            .get_storage(slice.binding())
+            .get_storage(binding.clone())
             .expect("Failed to find storage!");
-        self.memory_uniforms.storage().get(&handle)
+        self.memory_uniforms
+            .storage()
+            .get(&handle)
+            .with_lease(binding)
     }
 
     pub(crate) fn memory_usage(&self) -> cubecl_runtime::memory_management::MemoryUsage {

@@ -263,6 +263,38 @@ pub fn init_device(setup: WgpuSetup, options: RuntimeOptions) -> WgpuDevice {
     device_id
 }
 
+/// Select a setup for graphics API `G` and register it under a fresh [`WgpuDevice`] ID.
+///
+/// Unlike [`init_setup`], this function does not register a client under `selector`, so it can be
+/// called repeatedly with the same selector to create independent runtime clients.
+///
+/// On WebAssembly, use [`init_device_for_graphics_api_async`] instead.
+pub fn init_device_for_graphics_api<G: GraphicsApi>(
+    selector: &WgpuDevice,
+    options: RuntimeOptions,
+) -> WgpuDevice {
+    cfg_if::cfg_if! {
+        if #[cfg(target_family = "wasm")] {
+            let _ = (selector, options);
+            panic!("Creating a wgpu device synchronously is unsupported on wasm. Use init_device_for_graphics_api_async instead");
+        } else {
+            future::block_on(init_device_for_graphics_api_async::<G>(selector, options))
+        }
+    }
+}
+
+/// Async version of [`init_device_for_graphics_api`].
+///
+/// The selector is used only to choose an adapter. The returned [`WgpuDevice::Existing`] ID is
+/// globally unique and owns an independently registered runtime client.
+pub async fn init_device_for_graphics_api_async<G: GraphicsApi>(
+    selector: &WgpuDevice,
+    options: RuntimeOptions,
+) -> WgpuDevice {
+    let setup = create_setup_for_device(selector, G::backend(), options.primary_memory).await;
+    init_device(setup, options)
+}
+
 /// Like [`init_setup_async`], but synchronous.
 /// On wasm, it is necessary to use [`init_setup_async`] instead.
 pub fn init_setup<G: GraphicsApi>(device: &WgpuDevice, options: RuntimeOptions) -> WgpuSetup {

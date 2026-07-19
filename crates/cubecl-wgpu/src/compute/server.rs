@@ -126,16 +126,18 @@ impl WgpuServer {
         // Store all the resources we'll be using. This could be eliminated if
         // there was a way to tie the lifetime of the resource to the memory handle.
         let mut resources = Vec::with_capacity(bindings.buffers.len());
+        let mut reservations = Vec::with_capacity(bindings.buffers.len());
 
         for b in bindings.buffers.into_iter() {
             let stream = self.scheduler.stream(&b.stream);
             let resource = stream.mem_manage.get_resource(b)?;
-            resource.ensure_gpu_access()?;
+            reservations.push(resource.acquire_gpu()?);
             resources.push(resource);
         }
 
         Ok(BindingsResource {
             resources,
+            reservations,
             info: bindings.info,
         })
     }
@@ -331,13 +333,17 @@ impl ComputeServer for WgpuServer {
                     return;
                 }
             };
-            if let Err(err) = resource.ensure_gpu_access() {
-                stream.error(err.into());
-                return;
-            }
+            let reservation = match resource.acquire_gpu() {
+                Ok(reservation) => reservation,
+                Err(err) => {
+                    stream.error(err.into());
+                    return;
+                }
+            };
             let task = ScheduleTask::Write {
                 data,
                 buffer: resource,
+                reservation,
             };
 
             self.scheduler.register(stream_id, task, &[]);
@@ -475,4 +481,61 @@ pub(crate) fn contiguous_strides(shape: &Shape) -> Strides {
         strides[i] = strides[i + 1] * shape[i + 1];
     }
     strides
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use crate::{HostAccessError, RuntimeOptions, WgpuDevice, runtime};
+    use cubecl_common::future;
+    use cubecl_runtime::server::Handle;
+
+    #[test]
+    fn scheduled_write_reserves_gpu_access_until_queue_submission() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        if future::block_on(instance.enumerate_adapters(wgpu::Backends::METAL)).is_empty() {
+            eprintln!("skipping scheduled-write reservation test: no Metal adapter is available");
+            return;
+        }
+
+        let options = RuntimeOptions {
+            tasks_max: 32,
+            memory_config: MemoryConfiguration::ExclusivePages,
+            primary_memory: PrimaryMemoryMode::HostVisible,
+        };
+        let setup = future::block_on(runtime::create_setup_for_device(
+            &WgpuDevice::DefaultDevice,
+            wgpu::Backend::Metal,
+            options.primary_memory,
+        ));
+        let mut server = runtime::create_server(setup, options);
+        let stream_id = StreamId::current();
+        let handle = Handle::new(stream_id, 16);
+        server.initialize_memory(handle.memory.clone(), 16, stream_id);
+        let managed = server
+            .get_resource(handle.clone().binding(), stream_id)
+            .unwrap();
+        let resource = managed.resource().clone();
+
+        server.write(
+            vec![(
+                CopyDescriptor::new(handle.binding(), [16].into(), [1].into(), 1),
+                Bytes::from_bytes_vec(vec![7; 16]),
+            )],
+            stream_id,
+        );
+
+        let host_attempt = std::thread::spawn(move || resource.map_read().unwrap_err());
+        assert_eq!(
+            host_attempt.join().unwrap(),
+            HostAccessError::GpuAccessInProgress
+        );
+
+        server.flush(stream_id).unwrap();
+        let guard = managed.resource().map_read().unwrap();
+        assert_eq!(&*guard, &[7; 16]);
+    }
 }

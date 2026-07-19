@@ -1,13 +1,16 @@
 use cubecl_common::backtrace::BackTrace;
 use cubecl_core::server::{IoError, ServerError};
-use cubecl_runtime::storage::{ComputeStorage, StorageHandle, StorageId, StorageUtilization};
+use cubecl_runtime::{
+    memory_management::ManagedMemoryBinding,
+    storage::{ComputeStorage, StorageHandle, StorageId, StorageUtilization},
+};
 use hashbrown::HashMap;
 use std::{
     num::NonZeroU64,
     ops::Deref,
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use wgpu::BufferUsages;
@@ -17,18 +20,22 @@ use wgpu::BufferUsages;
 /// 32 bytes covers the largest possible binding type (`vec4<f64>`).
 const MIN_BUFFER_SIZE: u64 = 32;
 
-const ACCESS_GPU_IDLE: u8 = 0;
-const ACCESS_HOST_MAPPED: u8 = 1;
+const ACCESS_GPU_IDLE: usize = 0;
+const ACCESS_HOST_MAPPED: usize = 1 << (usize::BITS - 1);
+const ACCESS_GPU_COUNT_MASK: usize = ACCESS_HOST_MAPPED - 1;
 
 static NEXT_ALLOCATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Error returned when host and GPU access to a WGPU allocation cannot be coordinated.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostAccessError {
     /// The allocation was created without host-visible primary memory enabled.
     DeviceLocalAllocation,
     /// Another host mapping is already active for the physical allocation.
     OverlappingHostMapping,
+    /// GPU work has reserved the allocation and has not yet been submitted.
+    GpuAccessInProgress,
     /// GPU use was requested while a host mapping is active.
     MappedForHost,
     /// WGPU failed to complete the asynchronous map callback.
@@ -46,6 +53,9 @@ impl core::fmt::Display for HostAccessError {
             Self::OverlappingHostMapping => {
                 f.write_str("the WGPU allocation already has an active host mapping")
             }
+            Self::GpuAccessInProgress => f.write_str(
+                "the WGPU allocation has GPU work pending submission and cannot be mapped by the host",
+            ),
             Self::MappedForHost => f.write_str(
                 "the WGPU allocation is mapped for host access and cannot be used by the GPU",
             ),
@@ -76,7 +86,7 @@ impl From<HostAccessError> for ServerError {
 #[derive(Debug)]
 struct AllocationAccessInner {
     allocation_id: u64,
-    state: AtomicU8,
+    state: AtomicUsize,
 }
 
 #[derive(Clone, Debug)]
@@ -95,7 +105,7 @@ impl AllocationAccess {
         Self {
             inner: Arc::new(AllocationAccessInner {
                 allocation_id,
-                state: AtomicU8::new(ACCESS_GPU_IDLE),
+                state: AtomicUsize::new(ACCESS_GPU_IDLE),
             }),
         }
     }
@@ -113,7 +123,13 @@ impl AllocationAccess {
                 Ordering::Acquire,
                 Ordering::Relaxed,
             )
-            .map_err(|_| HostAccessError::OverlappingHostMapping)?;
+            .map_err(|state| {
+                if state == ACCESS_HOST_MAPPED {
+                    HostAccessError::OverlappingHostMapping
+                } else {
+                    HostAccessError::GpuAccessInProgress
+                }
+            })?;
 
         Ok(HostAccessToken {
             access: Some(self.inner.clone()),
@@ -121,10 +137,54 @@ impl AllocationAccess {
     }
 
     fn ensure_gpu_access(&self) -> Result<(), HostAccessError> {
-        match self.inner.state.load(Ordering::Acquire) {
-            ACCESS_GPU_IDLE => Ok(()),
-            ACCESS_HOST_MAPPED => Err(HostAccessError::MappedForHost),
-            _ => unreachable!("invalid WGPU allocation access state"),
+        if self.inner.state.load(Ordering::Acquire) == ACCESS_HOST_MAPPED {
+            Err(HostAccessError::MappedForHost)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn acquire_gpu(&self) -> Result<GpuAccessToken, HostAccessError> {
+        let mut state = self.inner.state.load(Ordering::Acquire);
+        loop {
+            if state == ACCESS_HOST_MAPPED {
+                return Err(HostAccessError::MappedForHost);
+            }
+            assert_ne!(
+                state, ACCESS_GPU_COUNT_MASK,
+                "too many simultaneous WGPU GPU reservations"
+            );
+            match self.inner.state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Ok(GpuAccessToken {
+                        access: Some(self.inner.clone()),
+                        lease: None,
+                    });
+                }
+                Err(current) => state = current,
+            }
+        }
+    }
+}
+
+/// RAII reservation preventing host mapping until queued GPU use has been submitted.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct GpuAccessToken {
+    access: Option<Arc<AllocationAccessInner>>,
+    lease: Option<ManagedMemoryBinding>,
+}
+
+impl Drop for GpuAccessToken {
+    fn drop(&mut self) {
+        if let Some(access) = self.access.take() {
+            let previous = access.state.fetch_sub(1, Ordering::Release);
+            debug_assert!(previous > 0 && previous < ACCESS_HOST_MAPPED);
         }
     }
 }
@@ -168,9 +228,11 @@ impl core::fmt::Debug for WgpuStorage {
 /// The memory resource that can be allocated for wgpu.
 ///
 /// For [`crate::WgpuRuntime`], callers can resolve a public `CubeCL` allocation handle with
-/// [`cubecl_runtime::client::ComputeClient::get_resource`]. Keep the returned
-/// [`cubecl_runtime::storage::ManagedResource`] alive, call its `resource` method to borrow this
-/// value, and then use [`Self::allocation_id`], [`Self::map_read`], or [`Self::map_write`].
+/// [`cubecl_runtime::client::ComputeClient::get_resource`]. Call the returned
+/// [`cubecl_runtime::storage::ManagedResource`]'s `resource` method to borrow this value, and then
+/// use [`Self::allocation_id`], [`Self::map_read`], or [`Self::map_write`]. Managed resources,
+/// cloned `WgpuResource` values, mapped guards, and queued GPU reservations each retain the
+/// memory-manager lease for as long as they can access the allocation.
 #[derive(Clone, Debug)]
 pub struct WgpuResource {
     /// The wgpu buffer.
@@ -184,6 +246,7 @@ pub struct WgpuResource {
     /// The result considers the offset.
     pub size: u64,
     allocation: Arc<WgpuAllocation>,
+    lease: Option<ManagedMemoryBinding>,
 }
 
 impl WgpuResource {
@@ -204,6 +267,7 @@ impl WgpuResource {
             offset,
             size,
             allocation,
+            lease: None,
         }
     }
 
@@ -213,7 +277,13 @@ impl WgpuResource {
             offset,
             size,
             allocation,
+            lease: None,
         }
+    }
+
+    pub(crate) fn with_lease(mut self, lease: ManagedMemoryBinding) -> Self {
+        self.lease = Some(lease);
+        self
     }
 
     /// Returns the process-unique identity of the underlying physical allocation.
@@ -224,6 +294,12 @@ impl WgpuResource {
     /// Validates that the resource can currently be used by the GPU.
     pub fn ensure_gpu_access(&self) -> Result<(), HostAccessError> {
         self.allocation.allocation_access.ensure_gpu_access()
+    }
+
+    pub(crate) fn acquire_gpu(&self) -> Result<GpuAccessToken, HostAccessError> {
+        let mut token = self.allocation.allocation_access.acquire_gpu()?;
+        token.lease = self.lease.clone();
+        Ok(token)
     }
 
     fn acquire_host(&self) -> Result<HostAccessToken, HostAccessError> {
@@ -250,6 +326,7 @@ impl WgpuResource {
                 view: None,
                 logical_len: 0,
                 token: Some(token),
+                _lease: self.lease.clone(),
             });
         }
 
@@ -288,6 +365,7 @@ impl WgpuResource {
             view: Some(view),
             logical_len: self.size as usize,
             token: Some(token),
+            _lease: self.lease.clone(),
         })
     }
 
@@ -302,6 +380,7 @@ impl WgpuResource {
                 view: None,
                 logical_len: 0,
                 token: Some(token),
+                _lease: self.lease.clone(),
             });
         }
 
@@ -340,6 +419,7 @@ impl WgpuResource {
             view: Some(view),
             logical_len: self.size as usize,
             token: Some(token),
+            _lease: self.lease.clone(),
         })
     }
 
@@ -394,6 +474,7 @@ pub struct WgpuMappedReadGuard {
     view: Option<wgpu::BufferView>,
     logical_len: usize,
     token: Option<HostAccessToken>,
+    _lease: Option<ManagedMemoryBinding>,
 }
 
 impl Deref for WgpuMappedReadGuard {
@@ -427,6 +508,7 @@ pub struct WgpuMappedWriteGuard {
     view: Option<wgpu::BufferViewMut>,
     logical_len: usize,
     token: Option<HostAccessToken>,
+    _lease: Option<ManagedMemoryBinding>,
 }
 
 impl WgpuMappedWriteGuard {
@@ -572,6 +654,31 @@ mod tests {
         drop(token);
 
         assert_eq!(access.ensure_gpu_access(), Ok(()));
+        assert!(access.acquire_host().is_ok());
+    }
+
+    #[test]
+    fn gpu_reservation_excludes_host_access_until_submission() {
+        let access = AllocationAccess::new();
+        let worker_access = access.clone();
+        let (reserved_tx, reserved_rx) = std::sync::mpsc::sync_channel(1);
+        let (submitted_tx, submitted_rx) = std::sync::mpsc::sync_channel(1);
+
+        let worker = std::thread::spawn(move || {
+            let reservation = worker_access.acquire_gpu().unwrap();
+            reserved_tx.send(()).unwrap();
+            submitted_rx.recv().unwrap();
+            drop(reservation);
+        });
+
+        reserved_rx.recv().unwrap();
+        assert_eq!(
+            access.acquire_host().unwrap_err(),
+            HostAccessError::GpuAccessInProgress
+        );
+
+        submitted_tx.send(()).unwrap();
+        worker.join().unwrap();
         assert!(access.acquire_host().is_ok());
     }
 }
