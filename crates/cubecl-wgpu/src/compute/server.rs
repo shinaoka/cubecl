@@ -54,6 +54,31 @@ pub struct WgpuServer {
     pub(crate) utilities: Arc<ServerUtilities<Self>>,
 }
 
+/// Completion handle for one native WGPU queue submission.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone, Debug)]
+pub struct WgpuSubmission {
+    device: wgpu::Device,
+    index: wgpu::SubmissionIndex,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl WgpuSubmission {
+    /// Wait for this submission. Calling this method more than once is valid.
+    pub fn wait(&self) -> Result<(), ServerError> {
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(self.index.clone()),
+                timeout: None,
+            })
+            .map(|_| ())
+            .map_err(|error| ServerError::Generic {
+                reason: alloc::format!("WGPU submission wait failed: {error}"),
+                backtrace: BackTrace::capture(),
+            })
+    }
+}
+
 impl ServerCommunication for WgpuServer {
     const SERVER_COMM_ENABLED: bool = false;
 }
@@ -117,6 +142,24 @@ impl WgpuServer {
             backend,
             utilities: Arc::new(utilities),
         }
+    }
+
+    /// Submit pending work for one stream and return its exact queue completion.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn submit_stream_completion(
+        &mut self,
+        stream_id: StreamId,
+    ) -> Result<WgpuSubmission, ServerError> {
+        self.scheduler.execute_streams(vec![stream_id]);
+        let stream = self.scheduler.stream(&stream_id);
+        let device = stream.device.clone();
+        let index = stream
+            .flush_submission(StreamErrorMode {
+                ignore: false,
+                flush: true,
+            })?
+            .unwrap_or_else(|| stream.submission_barrier());
+        Ok(WgpuSubmission { device, index })
     }
 
     fn prepare_bindings(
@@ -537,5 +580,52 @@ mod tests {
         server.flush(stream_id).unwrap();
         let guard = managed.resource().map_read().unwrap();
         assert_eq!(&*guard, &[7; 16]);
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod submission_completion_tests {
+    use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn submission_completion_api_is_thread_safe() {
+        assert_send_sync::<WgpuSubmission>();
+
+        let _submit: fn(&mut WgpuServer, StreamId) -> Result<WgpuSubmission, ServerError> =
+            WgpuServer::submit_stream_completion;
+    }
+
+    #[test]
+    #[ignore = "requires a Vulkan adapter"]
+    fn stream_submission_completion_can_be_waited_repeatedly() {
+        use crate::{PrimaryMemoryMode, RuntimeOptions, WgpuDevice, runtime};
+        use cubecl_common::future;
+        use cubecl_runtime::server::ComputeServer;
+
+        let options = RuntimeOptions {
+            tasks_max: 32,
+            memory_config: MemoryConfiguration::ExclusivePages,
+            primary_memory: PrimaryMemoryMode::DeviceLocal,
+        };
+        let setup = future::block_on(runtime::create_setup_for_device(
+            &WgpuDevice::DefaultDevice,
+            wgpu::Backend::Vulkan,
+            options.primary_memory,
+        ));
+        let mut server = runtime::create_server(setup, options);
+        let stream_id = StreamId::current();
+        let _resource = server
+            .scheduler
+            .stream(&stream_id)
+            .create_uniform(&[1, 2, 3, 4]);
+
+        let completion = server.submit_stream_completion(stream_id).unwrap();
+        completion.wait().unwrap();
+        completion.wait().unwrap();
+        drop(completion);
+        drop(_resource);
+        future::block_on(server.sync(stream_id)).unwrap();
     }
 }

@@ -509,8 +509,16 @@ impl WgpuStream {
     }
 
     pub fn flush(&mut self, mode: StreamErrorMode) -> Result<(), ServerError> {
+        self.flush_submission(mode).map(|_| ())
+    }
+
+    pub(crate) fn flush_submission(
+        &mut self,
+        mode: StreamErrorMode,
+    ) -> Result<Option<wgpu::SubmissionIndex>, ServerError> {
         if self.tasks_count == 0 && self.pending_write_count == 0 {
-            return self.flush_errors(mode);
+            self.flush_errors(mode)?;
+            return Ok(None);
         }
 
         // End the current compute pass.
@@ -533,7 +541,7 @@ impl WgpuStream {
         self.pending_write_gpu_reservations.clear();
 
         self.submission_load
-            .regulate(&self.device, self.tasks_count, index);
+            .regulate(&self.device, self.tasks_count, index.clone());
 
         // Cleanup allocations and deallocations.
         self.mem_manage.memory_cleanup(false);
@@ -542,7 +550,30 @@ impl WgpuStream {
         self.tasks_count = 0;
         self.pending_write_count = 0;
 
-        self.flush_errors(mode)
+        if let Err(error) = self.flush_errors(mode) {
+            #[cfg(not(target_family = "wasm"))]
+            if let Err(poll_error) = self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(index),
+                timeout: None,
+            }) {
+                log::warn!(
+                    "wgpu: failed to retire a submission after a stream error ({poll_error})"
+                );
+            }
+            return Err(error);
+        }
+
+        Ok(Some(index))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn submission_barrier(&self) -> wgpu::SubmissionIndex {
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("CubeCL Submission Completion Barrier"),
+            });
+        self.queue.submit([encoder.finish()])
     }
 
     fn flush_errors(&mut self, mode: StreamErrorMode) -> Result<(), ServerError> {
