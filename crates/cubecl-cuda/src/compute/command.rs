@@ -100,9 +100,15 @@ impl<'a> Command<'a> {
     /// * `Err(IoError)` - If the allocation fails.
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip(self)))]
     pub fn reserve(&mut self, size: u64) -> Result<ManagedMemoryHandle, IoError> {
-        let handle = self.streams.current().memory_management_gpu.reserve(size)?;
-
-        Ok(handle)
+        match self.streams.current().memory_management_gpu.reserve(size) {
+            Ok(handle) => Ok(handle),
+            Err(IoError::OutOfMemory { .. }) => {
+                log::warn!("device allocation of {size} B failed; reclaiming and retrying");
+                self.memory_cleanup();
+                self.streams.current().memory_management_gpu.reserve(size)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip(self)))]
