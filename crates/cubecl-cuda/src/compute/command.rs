@@ -108,6 +108,11 @@ impl<'a> Command<'a> {
                     .wait_sync()
                     .map_err(|err| IoError::Execution(Box::new(err)))?;
                 self.memory_cleanup();
+                // Cleanup queues `cuMemFreeAsync`; complete those frees before
+                // immediately retrying the allocation that triggered reclaim.
+                Fence::new(self.streams.current().sys)
+                    .wait_sync()
+                    .map_err(|err| IoError::Execution(Box::new(err)))?;
                 self.streams.current().memory_management_gpu.reserve(size)
             }
             Err(err) => Err(err),
