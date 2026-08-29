@@ -413,9 +413,27 @@ impl<D: Dialect> Unary<D> for Assign {
     {
         // Cast only when necessary.
         if elem != input.elem() {
-            match elem {
-                Elem::TF32 => write!(f, "nvcuda::wmma::__float_to_tf32({input})"),
-                elem => write!(f, "{elem}({input})"),
+            // cuComplex types are C structs without converting constructors. Complex-to-real
+            // casts use the real component, while complex-to-bool checks both components,
+            // matching `ConstantValue::cast_to`.
+            match (input.elem(), elem) {
+                (Elem::CF32 | Elem::CF64, Elem::CF32) => {
+                    write!(f, "make_cuFloatComplex({input}.x, {input}.y)")
+                }
+                (Elem::CF32 | Elem::CF64, Elem::CF64) => {
+                    write!(f, "make_cuDoubleComplex({input}.x, {input}.y)")
+                }
+                (_, Elem::CF32) => write!(f, "make_cuFloatComplex({input}, 0.0f)"),
+                (_, Elem::CF64) => write!(f, "make_cuDoubleComplex({input}, 0.0)"),
+                (Elem::CF32 | Elem::CF64, Elem::TF32) => {
+                    write!(f, "nvcuda::wmma::__float_to_tf32({input}.x)")
+                }
+                (Elem::CF32 | Elem::CF64, Elem::Bool) => {
+                    write!(f, "({input}.x != 0 || {input}.y != 0)")
+                }
+                (Elem::CF32 | Elem::CF64, elem) => write!(f, "{elem}({input}.x)"),
+                (_, Elem::TF32) => write!(f, "nvcuda::wmma::__float_to_tf32({input})"),
+                (_, elem) => write!(f, "{elem}({input})"),
             }
         } else {
             write!(f, "{input}")
@@ -483,3 +501,6 @@ impl<D: Dialect> Unary<D> for IsInf {
         true
     }
 }
+
+#[cfg(test)]
+mod tests;
