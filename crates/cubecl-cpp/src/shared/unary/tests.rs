@@ -2,7 +2,7 @@ use crate::{
     cuda::{CudaDialect, mma::PtxWmmaCompiler},
     shared::{Elem, Instruction, Item, UnaryInstruction, Variable},
 };
-use cubecl_core::ir::ConstantValue;
+use cubecl_core::ir::{ConstantValue, ElemType};
 
 type Dialect = CudaDialect<PtxWmmaCompiler>;
 
@@ -49,4 +49,16 @@ fn cuda_complex_casts_use_cucomplex_components_and_constructors() {
         "output = make_cuDoubleComplex(input.x, input.y);\n"
     );
     assert_eq!(cast(Elem::CF32, Elem::F64), "output = double(input.x);\n");
+    assert_eq!(
+        cast(Elem::CF32, Elem::Bool),
+        "output = (input.x != 0 || input.y != 0);\n"
+    );
+    assert_eq!(
+        ConstantValue::Complex(0.0, 1.0).cast_to(ElemType::Bool),
+        ConstantValue::Bool(true)
+    );
+    assert_eq!(
+        ConstantValue::Complex(0.0, 0.0).cast_to(ElemType::Bool),
+        ConstantValue::Bool(false)
+    );
 }

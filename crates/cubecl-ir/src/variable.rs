@@ -505,7 +505,10 @@ impl ConstantValue {
                     }
                 }
                 .into(),
-                ElemType::Bool => self.as_bool().into(),
+                ElemType::Bool => match self {
+                    ConstantValue::Complex(re, im) => (*re != 0.0 || *im != 0.0).into(),
+                    _ => self.as_bool().into(),
+                },
                 ElemType::Complex(kind) => match (self, kind) {
                     (ConstantValue::Complex(re, im), ComplexKind::C32) => {
                         ConstantValue::Complex(*re as f32 as f64, *im as f32 as f64)

@@ -414,7 +414,8 @@ impl<D: Dialect> Unary<D> for Assign {
         // Cast only when necessary.
         if elem != input.elem() {
             // cuComplex types are C structs without converting constructors. Complex-to-real
-            // casts use the real component, matching `ConstantValue::cast_to`.
+            // casts use the real component, while complex-to-bool checks both components,
+            // matching `ConstantValue::cast_to`.
             match (input.elem(), elem) {
                 (Elem::CF32 | Elem::CF64, Elem::CF32) => {
                     write!(f, "make_cuFloatComplex({input}.x, {input}.y)")
@@ -426,6 +427,9 @@ impl<D: Dialect> Unary<D> for Assign {
                 (_, Elem::CF64) => write!(f, "make_cuDoubleComplex({input}, 0.0)"),
                 (Elem::CF32 | Elem::CF64, Elem::TF32) => {
                     write!(f, "nvcuda::wmma::__float_to_tf32({input}.x)")
+                }
+                (Elem::CF32 | Elem::CF64, Elem::Bool) => {
+                    write!(f, "({input}.x != 0 || {input}.y != 0)")
                 }
                 (Elem::CF32 | Elem::CF64, elem) => write!(f, "{elem}({input}.x)"),
                 (_, Elem::TF32) => write!(f, "nvcuda::wmma::__float_to_tf32({input})"),
