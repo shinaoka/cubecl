@@ -249,9 +249,10 @@ impl<Storage: ComputeStorage> MemoryManagement<Storage> {
 
                 // Add pools from big to small.
                 pools.push(MemoryPoolOptions {
-                    pool_type: PoolType::SlicedPages {
-                        page_size: max_page / memory_alignment * memory_alignment,
-                        max_slice_size: max_page / memory_alignment * memory_alignment,
+                    // Large allocations vary substantially in tensor-network
+                    // workloads; whole-device slabs strand too much memory.
+                    pool_type: PoolType::ExclusivePages {
+                        max_alloc_size: max_page / memory_alignment * memory_alignment,
                     },
                     dealloc_period: None,
                 });
@@ -1099,8 +1100,9 @@ mod tests {
         let _handle = memory_management.reserve(alloc_size);
         let _new_handle = memory_management.reserve(alloc_size);
         let usage = memory_management.memory_usage();
-        // Each slice should be aligned to 60 bytes, so 20 padding bytes.
+        // Each allocation is exact apart from its 10 alignment bytes.
         assert_eq!(usage.bytes_padding, 10 * 2);
+        assert_eq!(usage.bytes_reserved, 50 * 2);
     }
 
     #[test_log::test]
