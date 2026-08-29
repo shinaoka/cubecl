@@ -104,6 +104,9 @@ impl<'a> Command<'a> {
             Ok(handle) => Ok(handle),
             Err(IoError::OutOfMemory { .. }) => {
                 log::warn!("device allocation of {size} B failed; reclaiming and retrying");
+                Fence::new(self.streams.current().sys)
+                    .wait_sync()
+                    .map_err(|err| IoError::Execution(Box::new(err)))?;
                 self.memory_cleanup();
                 self.streams.current().memory_management_gpu.reserve(size)
             }
