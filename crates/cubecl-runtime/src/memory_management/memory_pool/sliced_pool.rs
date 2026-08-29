@@ -1,7 +1,7 @@
 use crate::{
     memory_management::{
         BytesFormat, ManagedMemoryHandle, MemoryLocation, MemoryUsage,
-        memory_pool::{MemoryPage, MemoryPool, Slice},
+        memory_pool::{MemoryPage, MemoryPool, Slice, calculate_padding},
     },
     server::IoError,
     storage::StorageId,
@@ -68,7 +68,12 @@ impl MemoryPool for SlicedPool {
         storage: &mut Storage,
         size: u64,
     ) -> Result<super::ManagedMemoryHandle, crate::server::IoError> {
-        let storage = storage.alloc(self.page_size)?;
+        let storage = match storage.alloc(self.page_size) {
+            Err(IoError::OutOfMemory { .. }) => {
+                storage.alloc(size + calculate_padding(size, self.alignment))?
+            }
+            result => result?,
+        };
 
         let storage_id = storage.id;
         let mut location_base = self.location_base;

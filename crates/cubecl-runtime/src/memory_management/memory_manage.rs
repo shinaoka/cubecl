@@ -621,8 +621,46 @@ impl<Storage> core::fmt::Debug for MemoryManagement<Storage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory_management::MemoryManagement, storage::BytesStorage};
+    use crate::{
+        memory_management::MemoryManagement,
+        storage::{BytesStorage, ComputeStorage, StorageHandle, StorageId},
+    };
     use alloc::vec;
+
+    struct LimitedStorage {
+        storage: BytesStorage,
+        max_alloc_size: u64,
+    }
+
+    impl ComputeStorage for LimitedStorage {
+        type Resource = <BytesStorage as ComputeStorage>::Resource;
+
+        fn alignment(&self) -> usize {
+            self.storage.alignment()
+        }
+
+        fn get(&mut self, handle: &StorageHandle) -> Self::Resource {
+            self.storage.get(handle)
+        }
+
+        fn alloc(&mut self, size: u64) -> Result<StorageHandle, IoError> {
+            if size > self.max_alloc_size {
+                return Err(IoError::OutOfMemory {
+                    size,
+                    backtrace: BackTrace::capture(),
+                });
+            }
+            self.storage.alloc(size)
+        }
+
+        fn dealloc(&mut self, id: StorageId) {
+            self.storage.dealloc(id)
+        }
+
+        fn flush(&mut self) {
+            self.storage.flush()
+        }
+    }
 
     const DUMMY_MEM_PROPS: MemoryDeviceProperties = MemoryDeviceProperties {
         max_page_size: 128 * 1024 * 1024,
@@ -715,6 +753,33 @@ mod tests {
         assert_eq!(usage.number_allocs, 2);
         assert_eq!(usage.bytes_in_use, alloc_size * 2);
         assert_eq!(usage.bytes_reserved, page_size);
+    }
+
+    #[test_log::test]
+    fn sliced_pool_falls_back_to_an_exact_page_after_oom() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            LimitedStorage {
+                storage: BytesStorage::default(),
+                max_alloc_size: 512,
+            },
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::SlicedPages {
+                        page_size: 1024,
+                        max_slice_size: 1024,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        let _handle = memory_management.reserve(400).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.bytes_in_use, 400);
+        assert_eq!(usage.bytes_reserved, 416);
     }
 
     #[test_log::test]
