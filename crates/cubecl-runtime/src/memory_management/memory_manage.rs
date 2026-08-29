@@ -757,6 +757,30 @@ mod tests {
     }
 
     #[test_log::test]
+    fn sliced_pool_allocates_large_slices_exactly() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            BytesStorage::default(),
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::SlicedPages {
+                        page_size: 1024,
+                        max_slice_size: 1024,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        let _handle = memory_management.reserve(400).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.bytes_in_use, 400);
+        assert_eq!(usage.bytes_reserved, 416);
+    }
+
+    #[test_log::test]
     fn sliced_pool_falls_back_to_an_exact_page_after_oom() {
         let mut memory_management = MemoryManagement::from_configuration(
             LimitedStorage {
@@ -777,10 +801,10 @@ mod tests {
             options(),
         );
 
-        let _handle = memory_management.reserve(400).unwrap();
+        let _handle = memory_management.reserve(200).unwrap();
         let usage = memory_management.memory_usage();
-        assert_eq!(usage.bytes_in_use, 400);
-        assert_eq!(usage.bytes_reserved, 416);
+        assert_eq!(usage.bytes_in_use, 200);
+        assert_eq!(usage.bytes_reserved, 224);
     }
 
     #[test_log::test]
@@ -842,7 +866,7 @@ mod tests {
         let usage = memory_management.memory_usage();
         assert_eq!(usage.number_allocs, 2);
         assert_eq!(usage.bytes_in_use, alloc_size * 2);
-        assert_eq!(usage.bytes_reserved, page_size * 2);
+        assert_eq!(usage.bytes_reserved, alloc_size * 2);
     }
 
     #[test_log::test]
@@ -906,9 +930,9 @@ mod tests {
 
         let usage = memory_management.memory_usage();
 
-        // Total memory should be size of all pages, and no more.
+        // These large slices use exact pages in their selected pools.
         assert_eq!(usage.bytes_in_use, alloc_sizes.iter().sum::<u64>());
-        assert!(usage.bytes_reserved >= sizes.iter().sum::<u64>());
+        assert_eq!(usage.bytes_reserved, alloc_sizes.iter().sum::<u64>());
     }
 
     #[test_log::test]

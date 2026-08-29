@@ -68,9 +68,15 @@ impl MemoryPool for SlicedPool {
         storage: &mut Storage,
         size: u64,
     ) -> Result<super::ManagedMemoryHandle, crate::server::IoError> {
-        let storage = match storage.alloc(self.page_size) {
-            Err(IoError::OutOfMemory { .. }) => {
-                storage.alloc(size + calculate_padding(size, self.alignment))?
+        let exact_size = size + calculate_padding(size, self.alignment);
+        let alloc_size = if exact_size > self.page_size / 4 {
+            exact_size
+        } else {
+            self.page_size
+        };
+        let storage = match storage.alloc(alloc_size) {
+            Err(IoError::OutOfMemory { .. }) if alloc_size != exact_size => {
+                storage.alloc(exact_size)?
             }
             result => result?,
         };
