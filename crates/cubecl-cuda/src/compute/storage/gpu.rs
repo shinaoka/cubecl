@@ -178,7 +178,7 @@ impl ComputeStorage for GpuStorage {
                 match cudarc::driver::result::malloc_sync(size as usize) {
                     Ok(ptr) => (ptr, AllocationKind::Sync),
                     Err(DriverError(cudarc::driver::sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY)) => {
-                        return Err(IoError::BufferTooBig {
+                        return Err(IoError::OutOfMemory {
                             size,
                             backtrace: BackTrace::capture(),
                         });

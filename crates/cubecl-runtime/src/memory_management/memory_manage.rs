@@ -249,9 +249,10 @@ impl<Storage: ComputeStorage> MemoryManagement<Storage> {
 
                 // Add pools from big to small.
                 pools.push(MemoryPoolOptions {
-                    pool_type: PoolType::SlicedPages {
-                        page_size: max_page / memory_alignment * memory_alignment,
-                        max_slice_size: max_page / memory_alignment * memory_alignment,
+                    // Large allocations vary substantially in tensor-network
+                    // workloads; whole-device slabs strand too much memory.
+                    pool_type: PoolType::ExclusivePages {
+                        max_alloc_size: max_page / memory_alignment * memory_alignment,
                     },
                     dealloc_period: None,
                 });
@@ -621,8 +622,48 @@ impl<Storage> core::fmt::Debug for MemoryManagement<Storage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory_management::MemoryManagement, storage::BytesStorage};
+    use crate::{
+        memory_management::MemoryManagement,
+        storage::{BytesStorage, ComputeStorage, StorageHandle, StorageId},
+    };
     use alloc::vec;
+
+    struct LimitedStorage {
+        storage: BytesStorage,
+        max_alloc_size: u64,
+        alloc_calls: u64,
+    }
+
+    impl ComputeStorage for LimitedStorage {
+        type Resource = <BytesStorage as ComputeStorage>::Resource;
+
+        fn alignment(&self) -> usize {
+            self.storage.alignment()
+        }
+
+        fn get(&mut self, handle: &StorageHandle) -> Self::Resource {
+            self.storage.get(handle)
+        }
+
+        fn alloc(&mut self, size: u64) -> Result<StorageHandle, IoError> {
+            self.alloc_calls += 1;
+            if size > self.max_alloc_size {
+                return Err(IoError::OutOfMemory {
+                    size,
+                    backtrace: BackTrace::capture(),
+                });
+            }
+            self.storage.alloc(size)
+        }
+
+        fn dealloc(&mut self, id: StorageId) {
+            self.storage.dealloc(id)
+        }
+
+        fn flush(&mut self) {
+            self.storage.flush()
+        }
+    }
 
     const DUMMY_MEM_PROPS: MemoryDeviceProperties = MemoryDeviceProperties {
         max_page_size: 128 * 1024 * 1024,
@@ -718,6 +759,142 @@ mod tests {
     }
 
     #[test_log::test]
+    fn sliced_pool_allocates_large_slices_exactly() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            BytesStorage::default(),
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::SlicedPages {
+                        page_size: 1024,
+                        max_slice_size: 1024,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        let _handle = memory_management.reserve(400).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.bytes_in_use, 400);
+        assert_eq!(usage.bytes_reserved, 416);
+    }
+
+    #[test_log::test]
+    fn sliced_pool_falls_back_to_an_exact_page_after_oom() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            LimitedStorage {
+                storage: BytesStorage::default(),
+                max_alloc_size: 512,
+                alloc_calls: 0,
+            },
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::SlicedPages {
+                        page_size: 1024,
+                        max_slice_size: 1024,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        let _handle = memory_management.reserve(200).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.bytes_in_use, 200);
+        assert_eq!(usage.bytes_reserved, 224);
+    }
+
+    #[test_log::test]
+    fn sliced_pool_oom_fallback_tries_an_exact_page_at_most_once() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            LimitedStorage {
+                storage: BytesStorage::default(),
+                max_alloc_size: 100,
+                alloc_calls: 0,
+            },
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::SlicedPages {
+                        page_size: 1024,
+                        max_slice_size: 1024,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        // Small slice: the full page fails, then the exact 224 B page also fails.
+        let result = memory_management.reserve(200);
+        assert!(matches!(result, Err(IoError::OutOfMemory { .. })));
+        assert_eq!(memory_management.storage().alloc_calls, 2);
+
+        // Large slice (416 B > page_size / 4) is already exact: no second attempt.
+        let result = memory_management.reserve(400);
+        assert!(matches!(result, Err(IoError::OutOfMemory { .. })));
+        assert_eq!(memory_management.storage().alloc_calls, 3);
+        assert_eq!(memory_management.memory_usage().bytes_reserved, 0);
+    }
+
+    #[test_log::test]
+    #[cfg(not(exclusive_memory_only))]
+    fn subslices_reserves_large_allocations_exactly() {
+        const MB: u64 = 1024 * 1024;
+        let mut memory_management = MemoryManagement::from_configuration(
+            BytesStorage::default(),
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::SubSlices,
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        // With a 128 MB device page the largest sliced pool caps slices at 16 MB,
+        // so 20 MB lands in the top exclusive pool as an exact page, not a slab.
+        let _handle = memory_management.reserve(20 * MB).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.bytes_in_use, 20 * MB);
+        assert_eq!(usage.bytes_reserved, 20 * MB);
+    }
+
+    #[test_log::test]
+    fn exclusive_pool_reuses_the_tightest_free_page() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            BytesStorage::default(),
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::ExclusivePages {
+                        max_alloc_size: 4096,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        let large = memory_management.reserve(1024).unwrap();
+        let small = memory_management.reserve(512).unwrap();
+        drop(large);
+        drop(small);
+
+        // 400 B must take the 512 B page so the 1024 B page stays free for 1000 B.
+        let _a = memory_management.reserve(400).unwrap();
+        let _b = memory_management.reserve(1000).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.number_allocs, 2);
+        assert_eq!(usage.bytes_reserved, 1024 + 512);
+    }
+
+    #[test_log::test]
     fn alloc_reuses_storage() {
         // If no storage is re-used, this will allocate two pages.
         let page_size = 512;
@@ -776,7 +953,7 @@ mod tests {
         let usage = memory_management.memory_usage();
         assert_eq!(usage.number_allocs, 2);
         assert_eq!(usage.bytes_in_use, alloc_size * 2);
-        assert_eq!(usage.bytes_reserved, page_size * 2);
+        assert_eq!(usage.bytes_reserved, alloc_size * 2);
     }
 
     #[test_log::test]
@@ -840,9 +1017,9 @@ mod tests {
 
         let usage = memory_management.memory_usage();
 
-        // Total memory should be size of all pages, and no more.
+        // These large slices use exact pages in their selected pools.
         assert_eq!(usage.bytes_in_use, alloc_sizes.iter().sum::<u64>());
-        assert!(usage.bytes_reserved >= sizes.iter().sum::<u64>());
+        assert_eq!(usage.bytes_reserved, alloc_sizes.iter().sum::<u64>());
     }
 
     #[test_log::test]
@@ -1034,8 +1211,9 @@ mod tests {
         let _handle = memory_management.reserve(alloc_size);
         let _new_handle = memory_management.reserve(alloc_size);
         let usage = memory_management.memory_usage();
-        // Each slice should be aligned to 60 bytes, so 20 padding bytes.
+        // Each allocation is exact apart from its 10 alignment bytes.
         assert_eq!(usage.bytes_padding, 10 * 2);
+        assert_eq!(usage.bytes_reserved, 50 * 2);
     }
 
     #[test_log::test]
