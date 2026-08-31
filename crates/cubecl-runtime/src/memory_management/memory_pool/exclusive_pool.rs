@@ -21,7 +21,6 @@ pub struct ExclusiveMemoryPool {
     dealloc_period: u64,
     last_dealloc_check: u64,
     max_alloc_size: u64,
-    cur_avg_size: f64,
     location_base: MemoryLocation,
 }
 
@@ -46,8 +45,6 @@ impl core::fmt::Display for ExclusiveMemoryPool {
         Ok(())
     }
 }
-
-const SIZE_AVG_DECAY: f64 = 0.01;
 
 // How many times to find the allocation 'free' before deallocating it.
 const ALLOC_AFTER_FREE: u32 = 5;
@@ -75,7 +72,6 @@ impl ExclusiveMemoryPool {
             dealloc_period,
             last_dealloc_check: 0,
             max_alloc_size,
-            cur_avg_size: max_alloc_size as f64 / 2.0,
             location_base: MemoryLocation::new(pool_pos, 0, 0),
         }
     }
@@ -95,9 +91,7 @@ impl ExclusiveMemoryPool {
         storage: &mut Storage,
         size: u64,
     ) -> Result<(usize, &mut MemoryPage), IoError> {
-        let alloc_size = (self.cur_avg_size as u64)
-            .max(size)
-            .next_multiple_of(self.alignment);
+        let alloc_size = size.next_multiple_of(self.alignment);
 
         let storage = storage.alloc(alloc_size)?;
 
@@ -132,9 +126,6 @@ impl MemoryPool for ExclusiveMemoryPool {
     ///
     /// Also clean ups, merging free slices together if permitted by the merging strategy
     fn try_reserve(&mut self, size: u64) -> Option<ManagedMemoryHandle> {
-        self.cur_avg_size =
-            self.cur_avg_size * (1.0 - SIZE_AVG_DECAY) + size as f64 * SIZE_AVG_DECAY;
-
         let padding = calculate_padding(size, self.alignment);
 
         self.get_free_page(size).map(|page| {

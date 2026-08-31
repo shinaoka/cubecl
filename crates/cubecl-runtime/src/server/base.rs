@@ -699,6 +699,19 @@ pub enum IoError {
         backtrace: BackTrace,
     },
 
+    /// The device had no memory left for this allocation.
+    ///
+    /// Unlike [`IoError::BufferTooBig`] (the allocation can never fit), this
+    /// describes the device at one moment, so reclaiming and retrying may succeed.
+    #[error("out of device memory allocating {size} bytes\n{backtrace}")]
+    OutOfMemory {
+        /// The size of the failed allocation in bytes.
+        size: u64,
+        /// The captured backtrace.
+        #[cfg_attr(std_io, serde(skip))]
+        backtrace: BackTrace,
+    },
+
     /// Strides aren't supported for this copy operation on this runtime
     #[error("the provided strides are not supported for this operation\n{backtrace}")]
     UnsupportedStrides {
