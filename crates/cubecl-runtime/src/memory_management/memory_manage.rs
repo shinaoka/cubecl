@@ -631,6 +631,7 @@ mod tests {
     struct LimitedStorage {
         storage: BytesStorage,
         max_alloc_size: u64,
+        alloc_calls: u64,
     }
 
     impl ComputeStorage for LimitedStorage {
@@ -645,6 +646,7 @@ mod tests {
         }
 
         fn alloc(&mut self, size: u64) -> Result<StorageHandle, IoError> {
+            self.alloc_calls += 1;
             if size > self.max_alloc_size {
                 return Err(IoError::OutOfMemory {
                     size,
@@ -786,6 +788,7 @@ mod tests {
             LimitedStorage {
                 storage: BytesStorage::default(),
                 max_alloc_size: 512,
+                alloc_calls: 0,
             },
             &DUMMY_MEM_PROPS,
             MemoryConfiguration::Custom {
@@ -805,6 +808,90 @@ mod tests {
         let usage = memory_management.memory_usage();
         assert_eq!(usage.bytes_in_use, 200);
         assert_eq!(usage.bytes_reserved, 224);
+    }
+
+    #[test_log::test]
+    fn sliced_pool_oom_fallback_tries_an_exact_page_at_most_once() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            LimitedStorage {
+                storage: BytesStorage::default(),
+                max_alloc_size: 100,
+                alloc_calls: 0,
+            },
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::SlicedPages {
+                        page_size: 1024,
+                        max_slice_size: 1024,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        // Small slice: the full page fails, then the exact 224 B page also fails.
+        let result = memory_management.reserve(200);
+        assert!(matches!(result, Err(IoError::OutOfMemory { .. })));
+        assert_eq!(memory_management.storage().alloc_calls, 2);
+
+        // Large slice (416 B > page_size / 4) is already exact: no second attempt.
+        let result = memory_management.reserve(400);
+        assert!(matches!(result, Err(IoError::OutOfMemory { .. })));
+        assert_eq!(memory_management.storage().alloc_calls, 3);
+        assert_eq!(memory_management.memory_usage().bytes_reserved, 0);
+    }
+
+    #[test_log::test]
+    #[cfg(not(exclusive_memory_only))]
+    fn subslices_reserves_large_allocations_exactly() {
+        const MB: u64 = 1024 * 1024;
+        let mut memory_management = MemoryManagement::from_configuration(
+            BytesStorage::default(),
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::SubSlices,
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        // With a 128 MB device page the largest sliced pool caps slices at 16 MB,
+        // so 20 MB lands in the top exclusive pool as an exact page, not a slab.
+        let _handle = memory_management.reserve(20 * MB).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.bytes_in_use, 20 * MB);
+        assert_eq!(usage.bytes_reserved, 20 * MB);
+    }
+
+    #[test_log::test]
+    fn exclusive_pool_reuses_the_tightest_free_page() {
+        let mut memory_management = MemoryManagement::from_configuration(
+            BytesStorage::default(),
+            &DUMMY_MEM_PROPS,
+            MemoryConfiguration::Custom {
+                pool_options: vec![MemoryPoolOptions {
+                    pool_type: PoolType::ExclusivePages {
+                        max_alloc_size: 4096,
+                    },
+                    dealloc_period: None,
+                }],
+            },
+            Arc::new(ServerLogger::default()),
+            options(),
+        );
+
+        let large = memory_management.reserve(1024).unwrap();
+        let small = memory_management.reserve(512).unwrap();
+        drop(large);
+        drop(small);
+
+        // 400 B must take the 512 B page so the 1024 B page stays free for 1000 B.
+        let _a = memory_management.reserve(400).unwrap();
+        let _b = memory_management.reserve(1000).unwrap();
+        let usage = memory_management.memory_usage();
+        assert_eq!(usage.number_allocs, 2);
+        assert_eq!(usage.bytes_reserved, 1024 + 512);
     }
 
     #[test_log::test]

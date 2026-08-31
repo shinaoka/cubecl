@@ -83,7 +83,7 @@ impl ExclusiveMemoryPool {
         self.pages
             .iter_mut()
             .filter(|page| page.alloc_size >= size && page.slice.is_free())
-            .min_by_key(|page| page.free_count)
+            .min_by_key(|page| (page.alloc_size, page.free_count))
     }
 
     fn alloc_page<Storage: ComputeStorage>(
